@@ -22,6 +22,8 @@ import {
 } from 'lucide-react';
 import { LiveTrackingMap } from './LiveTrackingMap';
 import { RealtimeOrderTracker } from './RealtimeOrderTracker';
+import { OrderProgressTracker } from './OrderProgressTracker';
+import { PastOrdersSection } from './PastOrdersSection';
 import { GarmentEvidencePanel } from './GarmentEvidencePanel';
 import { DisputesPanel } from './DisputesPanel';
 
@@ -49,7 +51,8 @@ export const CustomerDashboard: React.FC = () => {
     submitVerifiedReview,
   } = useApp();
 
-  const [activeTab, setActiveTab] = useState<'track' | 'history' | 'disputes' | 'addresses' | 'profile'>('track');
+  const [activeTab, setActiveTab] = useState<'track' | 'past_orders' | 'history' | 'disputes' | 'addresses' | 'profile'>('track');
+  const completedOrdersCount = customerOrders.filter(o => normalizeOrderStatus(o.status) === 'DELIVERED').length;
   const [disputeOrderId, setDisputeOrderId] = useState<string | undefined>(undefined);
   const [editingProfile, setEditingProfile] = useState(false);
   const [profileName, setProfileName] = useState(customerUser.name);
@@ -266,6 +269,16 @@ export const CustomerDashboard: React.FC = () => {
               Live Tracking
             </button>
             <button
+              onClick={() => setActiveTab('past_orders')}
+              className={`px-3.5 py-1.5 text-xs font-semibold rounded-md transition-all cursor-pointer whitespace-nowrap ${
+                activeTab === 'past_orders'
+                  ? 'bg-[#0B132B] text-white shadow-xs'
+                  : 'text-slate-600 hover:text-black'
+              }`}
+            >
+              Past Orders ({completedOrdersCount})
+            </button>
+            <button
               onClick={() => setActiveTab('history')}
               className={`px-3.5 py-1.5 text-xs font-semibold rounded-md transition-all cursor-pointer whitespace-nowrap ${
                 activeTab === 'history'
@@ -344,6 +357,9 @@ export const CustomerDashboard: React.FC = () => {
                 {/* Left Column (8 cols): Interactive Progress Stepper & Timeline */}
                 <div className="lg:col-span-8 space-y-6">
                   
+                  {/* 4-Stage Visual Order Progress Tracker (Received -> In-Process -> Out for Delivery -> Delivered) */}
+                  <OrderProgressTracker order={currentOrder} />
+
                   {/* Real-Time Status & Lifecycle Tracker */}
                   <RealtimeOrderTracker order={currentOrder} showPartnerQuickActions={false} />
 
@@ -659,7 +675,35 @@ export const CustomerDashboard: React.FC = () => {
 
               </div>
             )}
+
+            {/* Past Orders Section Preview below Live Tracking */}
+            <div className="mt-8">
+              <PastOrdersSection
+                orders={customerOrders}
+                onRebook={rebookOrder}
+                onTrackOrder={orderId => {
+                  setActiveTrackingOrderId(orderId);
+                  setActiveTab('track');
+                }}
+                onBookNew={() => setIsBookingOpen(true)}
+                maxVisible={3}
+                onViewAll={() => setActiveTab('past_orders')}
+              />
+            </div>
           </>
+        )}
+
+        {/* TAB: Past Orders (Completed Services & Invoice Summaries) */}
+        {activeTab === 'past_orders' && (
+          <PastOrdersSection
+            orders={customerOrders}
+            onRebook={rebookOrder}
+            onTrackOrder={orderId => {
+              setActiveTrackingOrderId(orderId);
+              setActiveTab('track');
+            }}
+            onBookNew={() => setIsBookingOpen(true)}
+          />
         )}
 
         {/* TAB 2: Order History (Strict Customer Data Isolation) */}
@@ -682,59 +726,63 @@ export const CustomerDashboard: React.FC = () => {
                 {customerOrders.map(order => (
                   <div 
                     key={order.id}
-                    className="p-5 hover:bg-slate-50 transition-colors flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4"
+                    className="p-5 hover:bg-slate-50 transition-colors space-y-3"
                   >
-                    <div className="space-y-1">
-                      <div className="flex items-center gap-3">
-                        <span className="font-bold font-brand text-[#0B132B]">{order.orderNumber}</span>
-                        <span className="text-xs text-slate-400">·</span>
-                        <span className="text-xs text-slate-500 font-medium">
-                          {order.serviceType.replace('_', ' ').toUpperCase()}
-                        </span>
-                        <span className="text-xs text-slate-400">·</span>
-                        <span className="text-xs font-semibold text-[#0B132B] uppercase">
-                          {t.statusLabels[order.status] || order.status}
-                        </span>
-                      </div>
-
-                      <div className="text-xs text-slate-500">
-                        <span>{order.items.reduce((s, i) => s + i.quantity, 0)} garments</span>
-                        <span className="mx-1.5">|</span>
-                        <span>Slot: {order.pickupSlot}</span>
-                        <span className="mx-1.5">|</span>
-                        <span>Valet: {order.assignedPartnerName || 'Searching...'}</span>
-                      </div>
-                    </div>
-
-                    <div className="flex items-center gap-3 shrink-0">
-                      <div className="text-right">
-                        <div className="text-sm font-bold text-[#0B132B] tabular-nums font-mono">
-                          ₹{order.totalAmount}
+                    <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+                      <div className="space-y-1">
+                        <div className="flex items-center gap-3">
+                          <span className="font-bold font-brand text-[#0B132B]">{order.orderNumber}</span>
+                          <span className="text-xs text-slate-400">·</span>
+                          <span className="text-xs text-slate-500 font-medium">
+                            {order.serviceType.replace('_', ' ').toUpperCase()}
+                          </span>
+                          <span className="text-xs text-slate-400">·</span>
+                          <span className="text-xs font-semibold text-[#0B132B] uppercase">
+                            {t.statusLabels[order.status] || order.status}
+                          </span>
                         </div>
-                        <div className="text-[11px] text-slate-400">
-                          {new Date(order.createdAt).toLocaleDateString()}
+
+                        <div className="text-xs text-slate-500">
+                          <span>{order.items.reduce((s, i) => s + i.quantity, 0)} garments</span>
+                          <span className="mx-1.5">|</span>
+                          <span>Slot: {order.pickupSlot}</span>
+                          <span className="mx-1.5">|</span>
+                          <span>Valet: {order.assignedPartnerName || 'Searching...'}</span>
                         </div>
                       </div>
 
-                      <div className="flex items-center gap-2">
-                        <button
-                          onClick={() => rebookOrder(order)}
-                          className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-800 text-xs font-semibold rounded cursor-pointer flex items-center gap-1"
-                        >
-                          <RotateCcw className="w-3 h-3" />
-                          <span>Rebook</span>
-                        </button>
-                        <button
-                          onClick={() => {
-                            setActiveTrackingOrderId(order.id);
-                            setActiveTab('track');
-                          }}
-                          className="px-3.5 py-1.5 bg-[#0B132B] hover:bg-[#1C2541] text-white text-xs font-semibold rounded cursor-pointer transition-colors"
-                        >
-                          Track
-                        </button>
+                      <div className="flex items-center gap-3 shrink-0">
+                        <div className="text-right">
+                          <div className="text-sm font-bold text-[#0B132B] tabular-nums font-mono">
+                            ₹{order.totalAmount}
+                          </div>
+                          <div className="text-[11px] text-slate-400">
+                            {new Date(order.createdAt).toLocaleDateString()}
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-2">
+                          <button
+                            onClick={() => rebookOrder(order)}
+                            className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-800 text-xs font-semibold rounded cursor-pointer flex items-center gap-1"
+                          >
+                            <RotateCcw className="w-3 h-3" />
+                            <span>Rebook</span>
+                          </button>
+                          <button
+                            onClick={() => {
+                              setActiveTrackingOrderId(order.id);
+                              setActiveTab('track');
+                            }}
+                            className="px-3.5 py-1.5 bg-[#0B132B] hover:bg-[#1C2541] text-white text-xs font-semibold rounded cursor-pointer transition-colors"
+                          >
+                            Track
+                          </button>
+                        </div>
                       </div>
                     </div>
+
+                    <OrderProgressTracker order={order} compact />
                   </div>
                 ))}
               </div>

@@ -14,8 +14,11 @@ import {
 import {
   getAuth,
   GoogleAuthProvider,
+  RecaptchaVerifier,
+  signInWithPhoneNumber,
   signInWithPopup,
   signOut as firebaseSignOut,
+  ConfirmationResult,
 } from 'firebase/auth';
 import { getStorage, ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import firebaseConfig from '../../firebase-applet-config.json';
@@ -113,6 +116,49 @@ export async function signOutFirebase() {
   } catch (err) {
     console.warn('Firebase signOut notice:', err);
   }
+}
+
+let activeRecaptchaVerifier: RecaptchaVerifier | null = null;
+
+export async function sendFirebasePhoneOtp(
+  phoneNumber: string,
+  containerId = 'firebase-recaptcha-container'
+): Promise<ConfirmationResult> {
+  const digits = phoneNumber.replace(/\D/g, '');
+  const e164 =
+    digits.length === 10
+      ? `+91${digits}`
+      : digits.length === 12 && digits.startsWith('91')
+      ? `+${digits}`
+      : phoneNumber.trim();
+
+  if (activeRecaptchaVerifier) {
+    try {
+      activeRecaptchaVerifier.clear();
+    } catch {
+      // Ignore cleanup errors
+    }
+    activeRecaptchaVerifier = null;
+  }
+
+  activeRecaptchaVerifier = new RecaptchaVerifier(auth, containerId, {
+    size: 'invisible',
+  });
+
+  return signInWithPhoneNumber(auth, e164, activeRecaptchaVerifier);
+}
+
+export async function verifyFirebasePhoneOtp(
+  confirmationResult: ConfirmationResult,
+  code: string
+): Promise<{ uid: string; phoneNumber: string | null; idToken: string }> {
+  const cred = await confirmationResult.confirm(code.trim());
+  const idToken = await cred.user.getIdToken();
+  return {
+    uid: cred.user.uid,
+    phoneNumber: cred.user.phoneNumber,
+    idToken,
+  };
 }
 
 /**

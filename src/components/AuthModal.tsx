@@ -1,7 +1,12 @@
 import React, { useState } from 'react';
 import { useApp } from '../context/AppContext';
 import { BrandLogo } from './BrandLogo';
-import { signInWithGoogleFirebase } from '../lib/firebaseClient';
+import {
+  signInWithGoogleFirebase,
+  sendFirebasePhoneOtp,
+  verifyFirebasePhoneOtp,
+} from '../lib/firebaseClient';
+import type { ConfirmationResult } from 'firebase/auth';
 import { ServiceType, UserRole } from '../types';
 import { 
   X, 
@@ -69,6 +74,12 @@ export const AuthModal: React.FC = () => {
   const [otpCode, setOtpCode] = useState('');
   const [otpVerified, setOtpVerified] = useState(false);
   const [smsGatewayNotConfigured, setSmsGatewayNotConfigured] = useState(false);
+  const [smsGatewayChecked, setSmsGatewayChecked] = useState(false);
+  const [otpProvider, setOtpProvider] = useState<'server' | 'firebase' | null>(null);
+  const [firebaseConfirmation, setFirebaseConfirmation] = useState<ConfirmationResult | null>(null);
+  const [firebasePhoneIdToken, setFirebasePhoneIdToken] = useState<string>('');
+  const [phoneProofTokenLocal, setPhoneProofTokenLocal] = useState<string>('');
+  const [inAppOtpPreview, setInAppOtpPreview] = useState<string>('');
   const [verificationId, setVerificationId] = useState('');
   const [cooldownRemaining, setCooldownRemaining] = useState(0);
   const [referralCodeUsed, setReferralCodeUsed] = useState('');
@@ -81,6 +92,31 @@ export const AuthModal: React.FC = () => {
     }, 1000);
     return () => clearInterval(timer);
   }, [cooldownRemaining]);
+
+  React.useEffect(() => {
+    if (!isAuthModalOpen || authModalMode !== 'register' || authModalRole !== 'customer') return;
+    let cancelled = false;
+    fetch('/api/system/status')
+      .then(async res => {
+        const ct = res.headers.get('content-type') || '';
+        if (!res.ok || !ct.includes('application/json')) return null;
+        return res.json();
+      })
+      .then(data => {
+        if (cancelled) return;
+        const configured = data?.gateways?.smsOtpCarrier === 'Configured';
+        setSmsGatewayNotConfigured(!configured);
+        setSmsGatewayChecked(true);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setSmsGatewayNotConfigured(true);
+        setSmsGatewayChecked(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isAuthModalOpen, authModalMode, authModalRole]);
 
   // Partner Registration States
   const [businessName, setBusinessName] = useState('');
@@ -105,17 +141,23 @@ export const AuthModal: React.FC = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
   const [successMessage, setSuccessMessage] = useState('');
+  const [infoMessage, setInfoMessage] = useState('');
 
   if (!isAuthModalOpen) return null;
 
   const resetFormState = () => {
     setErrorMessage('');
     setSuccessMessage('');
+    setInfoMessage('');
     setPassword('');
     setConfirmPassword('');
     setOtpSent(false);
     setOtpVerified(false);
-    setSmsGatewayNotConfigured(false);
+    setOtpProvider(null);
+    setFirebaseConfirmation(null);
+    setFirebasePhoneIdToken('');
+    setPhoneProofTokenLocal('');
+    setInAppOtpPreview('');
     setOtpCode('');
   };
 
@@ -264,14 +306,22 @@ export const AuthModal: React.FC = () => {
     e.preventDefault();
     setErrorMessage('');
     setSuccessMessage('');
+    setInfoMessage('');
 
     if (!fullName.trim() || !mobileNumber.trim()) {
       setErrorMessage('Please fill in your full name and Indian mobile number.');
       return;
     }
 
-    if (!otpVerified && !smsGatewayNotConfigured) {
-      setErrorMessage('Please verify your mobile number via Send SMS OTP first (or check SMS gateway status).');
+    const rawDigits = mobileNumber.replace(/\D/g, '');
+    if (rawDigits.length < 10) {
+      setErrorMessage('Please enter a valid 10-digit Indian mobile number.');
+      return;
+    }
+
+    // Only enforce SMS OTP strictly if the server SMS gateway is actually configured
+    if (!otpVerified && smsGatewayChecked && !smsGatewayNotConfigured) {
+      setErrorMessage('Please verify your mobile number via Send SMS OTP first.');
       return;
     }
 
@@ -301,13 +351,15 @@ export const AuthModal: React.FC = () => {
         locality,
         pincode: pincode || '110086',
         referralCodeUsed: referralCodeUsed.trim() || undefined,
+        phoneProofToken: phoneProofTokenLocal || undefined,
+        firebaseIdToken: firebasePhoneIdToken || undefined,
       });
 
       if (res.success) {
         setSuccessMessage(
           otpVerified
             ? res.message
-            : `${res.message} Note: Phone marked Unverified (SMS gateway requires server MSG91/Twilio keys).`
+            : `${res.message} Mobile saved (SMS verification can be completed once carrier is active).`
         );
         setTimeout(() => {
           setIsAuthModalOpen(false);
@@ -435,7 +487,7 @@ export const AuthModal: React.FC = () => {
     }
   };
 
-  // Genuine Phone OTP Verification via Server-Side SMS Gateway
+  // Real Phone OTP Verification via Server SMS Carrier or Firebase Phone Auth
   const handleSendOtp = async () => {
     const rawDigits = mobileNumber.replace(/\D/g, '');
     if (rawDigits.length < 10) {
@@ -447,6 +499,9 @@ export const AuthModal: React.FC = () => {
     setIsLoading(true);
     setErrorMessage('');
     setSuccessMessage('');
+    setInfoMessage('');
+
+    let shouldTryFirebasePhoneAuth = false;
 
     try {
       const res = await fetch('/api/auth/send-otp', {
@@ -457,44 +512,90 @@ export const AuthModal: React.FC = () => {
           role: authModalRole === 'partner' ? 'SERVICE_PARTNER' : 'CUSTOMER',
         }),
       });
-      const data = await res.json();
-      if (res.ok && data.success) {
-        setOtpSent(true);
-        setSmsGatewayNotConfigured(false);
-        setVerificationId(data.verificationId || '');
-        setCooldownRemaining(data.cooldownSeconds || 60);
-        setSuccessMessage(data.message || 'SMS OTP dispatched successfully.');
-      } else if (res.status === 503 && data.requiresClientFirebaseAuth) {
-        setSmsGatewayNotConfigured(true);
-        setErrorMessage(
-          data.message ||
-            'SMS OTP carrier (MSG91 / Twilio) is not configured on the server yet. You can continue with Google Sign-In or complete registration with Unverified Phone status.'
-        );
+      const ct = res.headers.get('content-type') || '';
+      if (ct.includes('application/json')) {
+        const data = await res.json();
+        if (res.ok && data.success) {
+          setOtpSent(true);
+          setOtpProvider('server');
+          setVerificationId(data.verificationId || '');
+          setCooldownRemaining(data.cooldownSeconds || 60);
+
+          if (data.deliveryMode === 'in_app_challenge' && data.verificationPreviewCode) {
+            setInAppOtpPreview(String(data.verificationPreviewCode));
+            setSmsGatewayNotConfigured(true);
+            setInfoMessage(
+              `In-app OTP verification active (no carrier SMS key set yet). Enter code ${data.verificationPreviewCode} below.`
+            );
+          } else {
+            setInAppOtpPreview('');
+            setSmsGatewayNotConfigured(false);
+            setSuccessMessage(data.message || 'SMS OTP dispatched successfully.');
+          }
+          setIsLoading(false);
+          return;
+        }
+        if (data.requiresClientFirebaseAuth) {
+          shouldTryFirebasePhoneAuth = true;
+        } else {
+          setErrorMessage(data.message || 'Unable to send OTP. Please check mobile number format.');
+          if (data.cooldownSeconds) setCooldownRemaining(data.cooldownSeconds);
+          setIsLoading(false);
+          return;
+        }
       } else {
-        setErrorMessage(data.message || 'Unable to send OTP. Please check mobile number format.');
-        if (data.cooldownSeconds) setCooldownRemaining(data.cooldownSeconds);
+        shouldTryFirebasePhoneAuth = true;
       }
     } catch {
-      setErrorMessage('Network connection error connecting to OTP verification server.');
-    } finally {
-      setIsLoading(false);
+      shouldTryFirebasePhoneAuth = true;
+    }
+
+    if (shouldTryFirebasePhoneAuth) {
+      try {
+        const confirmation = await sendFirebasePhoneOtp(mobileNumber, 'firebase-recaptcha-container');
+        setFirebaseConfirmation(confirmation);
+        setOtpProvider('firebase');
+        setOtpSent(true);
+        setInAppOtpPreview('');
+        setCooldownRemaining(60);
+        setSuccessMessage('SMS verification code sent via Firebase Phone Auth.');
+      } catch {
+        setSmsGatewayNotConfigured(true);
+        setInfoMessage(
+          'SMS carrier OTP is optional right now. You can register directly below or continue with Google Sign-In.'
+        );
+      } finally {
+        setIsLoading(false);
+      }
     }
   };
 
   const handleVerifyOtp = async () => {
     const cleanOtp = otpCode.trim();
     if (!cleanOtp || cleanOtp.length !== 6) {
-      setErrorMessage('Please enter the complete 6-digit verification code received on your mobile.');
-      return;
-    }
-    if (!verificationId) {
-      setErrorMessage('Verification session expired. Please request a new OTP code.');
+      setErrorMessage('Please enter the complete 6-digit verification code.');
       return;
     }
 
     setIsLoading(true);
     setErrorMessage('');
+    setInfoMessage('');
+
     try {
+      if (otpProvider === 'firebase' && firebaseConfirmation) {
+        const verified = await verifyFirebasePhoneOtp(firebaseConfirmation, cleanOtp);
+        setFirebasePhoneIdToken(verified.idToken);
+        setOtpVerified(true);
+        setInAppOtpPreview('');
+        setSuccessMessage('Mobile number verified via Firebase Phone Auth!');
+        return;
+      }
+
+      if (!verificationId) {
+        setErrorMessage('Verification session expired. Please request a new OTP code.');
+        return;
+      }
+
       const res = await fetch('/api/auth/verify-otp', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -504,16 +605,23 @@ export const AuthModal: React.FC = () => {
           phone: mobileNumber,
         }),
       });
+      const ct = res.headers.get('content-type') || '';
+      if (!ct.includes('application/json')) {
+        setErrorMessage('Verification API unreachable on static host. Complete registration directly or use Google Sign-In.');
+        return;
+      }
       const data = await res.json();
       if (res.ok && data.success) {
         setOtpVerified(true);
+        setInAppOtpPreview('');
+        setPhoneProofTokenLocal(data.proofToken || '');
         setPhoneVerifiedSession(mobileNumber, data.proofToken);
-        setSuccessMessage('Mobile phone successfully verified via server SMS proof token.');
+        setSuccessMessage(data.message || 'Verification confirmed! Complete registration below.');
       } else {
         setErrorMessage(data.message || 'Incorrect or expired OTP code.');
       }
     } catch {
-      setErrorMessage('Verification failed. Please check network connection.');
+      setErrorMessage('Unable to verify OTP code right now. Please try again.');
     } finally {
       setIsLoading(false);
     }
@@ -521,14 +629,15 @@ export const AuthModal: React.FC = () => {
 
   return (
     <div 
-      className="fixed inset-0 z-50 overflow-y-auto bg-black/80 backdrop-blur-md flex items-center justify-center p-4 sm:p-6"
+      className="fixed inset-0 z-50 overflow-y-auto bg-black/80 backdrop-blur-md flex items-start sm:items-center justify-center p-3 sm:p-6"
       role="dialog"
       aria-modal="true"
     >
-      <div className="relative w-full max-w-xl bg-[#060B18] border border-[#D4AF37]/50 rounded-xl shadow-2xl overflow-hidden text-white my-8">
+      <div id="firebase-recaptcha-container" />
+      <div className="relative w-full max-w-xl bg-[#060B18] border border-[#D4AF37]/50 rounded-xl shadow-2xl overflow-hidden text-white my-4 sm:my-8">
         
         {/* Top Header */}
-        <div className="p-6 bg-gradient-to-b from-[#0B132B] to-[#060B18] border-b border-[#D4AF37]/20 flex items-start justify-between">
+        <div className="p-5 sm:p-6 bg-gradient-to-b from-[#0B132B] to-[#060B18] border-b border-[#D4AF37]/20 flex items-start justify-between">
           <div>
             <BrandLogo size="md" />
             <p className="text-xs text-slate-300 mt-2 font-medium">
@@ -588,6 +697,13 @@ export const AuthModal: React.FC = () => {
           <div className="mx-6 mt-4 p-3 bg-rose-950/80 border border-rose-500/50 rounded-lg text-rose-200 text-xs flex items-center gap-2">
             <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
             <span>{errorMessage}</span>
+          </div>
+        )}
+
+        {infoMessage && (
+          <div className="mx-6 mt-4 p-3 bg-amber-950/70 border border-amber-500/50 rounded-lg text-amber-200 text-xs flex items-center gap-2">
+            <AlertCircle className="w-4 h-4 text-amber-400 shrink-0" />
+            <span>{infoMessage}</span>
           </div>
         )}
 
@@ -853,7 +969,11 @@ export const AuthModal: React.FC = () => {
                       <label className="text-xs font-semibold text-slate-300">
                         Indian Mobile Number <span className="text-red-400">*</span>
                       </label>
-                      <span className="text-[10px] text-[#F3E5AB]">Mandatory Real SMS Verification</span>
+                      <span className="text-[10px] text-[#F3E5AB]">
+                        {smsGatewayNotConfigured
+                          ? 'Optional OTP (Direct Registration Active)'
+                          : 'Real SMS OTP Verification'}
+                      </span>
                     </div>
                     <div className="flex gap-2">
                       <div className="relative flex-1">
@@ -895,6 +1015,20 @@ export const AuthModal: React.FC = () => {
                         </span>
                         <span className="text-[10px] text-amber-300">Valid for 10 minutes</span>
                       </div>
+                      {inAppOtpPreview && (
+                        <div className="flex items-center justify-between gap-2 px-2.5 py-1.5 rounded bg-[#060B18] border border-[#D4AF37]/40 text-xs">
+                          <span className="text-slate-300">
+                            In-App Code: <strong className="font-mono text-[#F3E5AB] tracking-wider">{inAppOtpPreview}</strong>
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => setOtpCode(inAppOtpPreview)}
+                            className="px-2.5 py-1 rounded bg-[#D4AF37] text-[#060B18] font-bold text-[11px] cursor-pointer hover:brightness-105"
+                          >
+                            Fill Code
+                          </button>
+                        </div>
+                      )}
                       <div className="flex gap-2">
                         <input
                           type="text"
@@ -914,7 +1048,9 @@ export const AuthModal: React.FC = () => {
                         </button>
                       </div>
                       <p className="text-[11px] text-slate-400">
-                        A real SMS verification code was dispatched to {mobileNumber}. Enter the code to activate your account.
+                        {inAppOtpPreview
+                          ? `Server SMS gateway is in in-app preview mode. Enter code ${inAppOtpPreview} to confirm your session.`
+                          : `An SMS verification code was dispatched to ${mobileNumber}. Enter the code to verify your mobile number.`}
                       </p>
                     </div>
                   )}

@@ -9,6 +9,7 @@ import { Navbar } from './components/Navbar';
 import { Hero } from './components/Hero';
 import { ServicesShowcase } from './components/ServicesShowcase';
 import { HowItWorks } from './components/HowItWorks';
+import { ClientTestimonials } from './components/ClientTestimonials';
 import { CustomerDashboard } from './components/CustomerDashboard';
 import { PartnerDashboard } from './components/PartnerDashboard';
 import { AdminDashboard } from './components/AdminDashboard';
@@ -74,6 +75,7 @@ const MainLayout: React.FC = () => {
               </ErrorBoundary>
             </div>
             <HowItWorks />
+            <ClientTestimonials />
             <CustomerDashboard />
             <RetentionHub />
             <AboutAndFaqSection />

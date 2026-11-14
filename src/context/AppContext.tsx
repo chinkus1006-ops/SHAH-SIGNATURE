@@ -366,6 +366,8 @@ interface AppContextType {
     locality?: string;
     pincode?: string;
     referralCodeUsed?: string;
+    phoneProofToken?: string;
+    firebaseIdToken?: string;
   }) => Promise<{ success: boolean; customer?: CustomerUser; message: string }>;
   registerPartnerAccount: (data: {
     name: string;
@@ -3106,13 +3108,26 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     locality?: string;
     pincode?: string;
     referralCodeUsed?: string;
+    phoneProofToken?: string;
+    firebaseIdToken?: string;
   }) => {
     try {
       const res = await fetch('/api/auth/customer-register', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(data),
+        body: JSON.stringify({
+          ...data,
+          phoneProofToken: data.phoneProofToken || phoneProofToken || undefined,
+        }),
       });
+      const contentType = res.headers.get('content-type') || '';
+      if (!contentType.includes('application/json')) {
+        return {
+          success: false,
+          message:
+            'Backend API server is unavailable on static hosting. Please open the full-stack app URL or use Google Sign-In.',
+        };
+      }
       const json = await res.json();
       if (!res.ok || !json?.success || !json.customer || !json.token) {
         return { success: false, message: json?.message || 'Registration failed.' };
@@ -3131,7 +3146,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         userName: newCustomer.name,
         userEmail: newCustomer.email,
         userPhone: newCustomer.phone,
-        phoneVerified: Boolean(phoneProofToken || newCustomer.phoneVerified),
+        phoneVerified: Boolean(newCustomer.phoneVerified || phoneProofToken),
         token: json.token,
         expiresAt: new Date(Date.now() + 24 * 3600 * 1000).toISOString(),
       };

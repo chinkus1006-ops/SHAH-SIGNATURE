@@ -6,6 +6,8 @@ import { fileURLToPath } from 'url';
 import {
   sendPhoneOtp,
   verifyPhoneOtp,
+  verifyPhoneProofToken,
+  verifyPhoneProofDetails,
   validateBookingEligibility,
   sanitizeIndianPhone,
   isRealAdminSdkReady,
@@ -403,12 +405,23 @@ app.post('/api/auth/send-otp', async (req, res) => {
 
     const result = await sendPhoneOtp(phone, role === 'SERVICE_PARTNER' ? 'SERVICE_PARTNER' : 'CUSTOMER');
     if (!result.success) {
-      const statusCode = result.requiresClientFirebaseAuth ? 503 : 429;
+      const statusCode =
+        typeof result.cooldownSeconds === 'number' || result.message.includes('Rate limit')
+          ? 429
+          : result.message.includes('Invalid Indian mobile')
+          ? 400
+          : 502;
       recordServerAudit('OTP_REQUEST_STATUS', role, phone, result.message, 'warning');
       return res.status(statusCode).json(result);
     }
 
-    recordServerAudit('OTP_REQUEST_DISPATCHED', role, sanitizeIndianPhone(phone), 'SMS OTP dispatched.', 'success');
+    recordServerAudit(
+      'OTP_REQUEST_DISPATCHED',
+      role,
+      sanitizeIndianPhone(phone),
+      result.smsDispatched ? 'SMS OTP dispatched via carrier.' : 'In-app verification OTP issued.',
+      'success'
+    );
     return res.json(result);
   } catch (error: any) {
     console.error('Error sending OTP:', error);
@@ -499,8 +512,19 @@ app.post('/api/auth/admin-login', (req, res) => {
   });
 });
 
-app.post('/api/auth/customer-register', (req, res) => {
-  const { name, phone, email, password, addressLine, locality, pincode, referralCodeUsed } = req.body || {};
+app.post('/api/auth/customer-register', async (req, res) => {
+  const {
+    name,
+    phone,
+    email,
+    password,
+    addressLine,
+    locality,
+    pincode,
+    referralCodeUsed,
+    phoneProofToken,
+    firebaseIdToken,
+  } = req.body || {};
 
   // Strictly ignore any client-supplied role/privileges (always force CUSTOMER)
   if (!name || !String(name).trim() || !phone || !String(phone).trim() || !email || !String(email).trim()) {
@@ -514,6 +538,16 @@ app.post('/api/auth/customer-register', (req, res) => {
   const duplicate = serverCustomers.find(c => c.email?.toLowerCase() === cleanEmail);
   if (duplicate) {
     return res.status(409).json({ success: false, message: 'Email already registered. Please sign in.' });
+  }
+
+  const sanitizedPhone = sanitizeIndianPhone(String(phone));
+  const proofDetails = verifyPhoneProofDetails(phoneProofToken, sanitizedPhone);
+  let isPhoneVerified = proofDetails.valid && proofDetails.carrierVerified;
+  if (!isPhoneVerified && firebaseIdToken) {
+    const fb = await verifyFirebaseClientToken(String(firebaseIdToken));
+    if (fb.valid && fb.phoneNumber && sanitizeIndianPhone(fb.phoneNumber) === sanitizedPhone) {
+      isPhoneVerified = true;
+    }
   }
 
   const newId = `cust_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
@@ -542,8 +576,8 @@ app.post('/api/auth/customer-register', (req, res) => {
     id: newId,
     customerCode,
     name: String(name).trim(),
-    phone: sanitizeIndianPhone(String(phone)),
-    phoneVerified: false,
+    phone: sanitizedPhone,
+    phoneVerified: isPhoneVerified,
     email: cleanEmail,
     username: String(name).trim().toLowerCase().replace(/\s+/g, '_'),
     addresses: [
