@@ -1,0 +1,6 @@
+{
+  "name": "SHAH SIGNATURE - Luxury Laundry & Ironing",
+  "description": "SHAH SIGNATURE: ONE NAME. MANY SOLUTIONS. SIGNATURE OF TRUST. On-demand luxury laundry, steam ironing, and dry cleaning concierge with real-time partner dispatch in Delhi PIN 110086.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

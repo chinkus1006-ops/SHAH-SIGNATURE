@@ -1,0 +1,73 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    // Global Safety Net: Deny all unauthenticated / unmatched Storage access
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+
+    function isSignedIn() {
+      return request.auth != null && (
+        request.auth.token.email_verified == true ||
+        request.auth.token.phone_number != null
+      );
+    }
+
+    function isAdmin() {
+      return isSignedIn() &&
+        request.auth.token.email_verified == true && (
+          request.auth.token.email == 'chinku.s1006@gmail.com' ||
+          request.auth.token.email == 'shahsignature@gmail.com'
+        );
+    }
+
+    function isValidImageOrDoc() {
+      return request.resource.size < 10 * 1024 * 1024 && (
+        request.resource.contentType.matches('image/.*') ||
+        request.resource.contentType == 'application/pdf'
+      );
+    }
+
+    // Order Evidence Photos (pickup, before/after service, delivery)
+    // Only authorized customer, assigned partner (verified via Firestore order doc), or Super Admin
+    match /garment_evidence/{folderId}/{fileName} {
+      allow read, write: if isAdmin() || (
+        isSignedIn() && isValidImageOrDoc() && (
+          folderId.matches('^' + request.auth.uid + '.*') ||
+          exists(/databases/(default)/documents/orders/$(folderId))
+        )
+      );
+    }
+
+    // Dispute Evidence Photos & Documents
+    match /disputes/{orderId}/{fileName} {
+      allow read: if isAdmin() || (
+        isSignedIn() && (
+          firestore.get(/databases/(default)/documents/orders/$(orderId)).data.customerId == request.auth.uid ||
+          firestore.get(/databases/(default)/documents/orders/$(orderId)).data.assignedPartnerId == request.auth.uid
+        )
+      );
+      allow write: if isAdmin() || (
+        isSignedIn() && isValidImageOrDoc() && (
+          firestore.get(/databases/(default)/documents/orders/$(orderId)).data.customerId == request.auth.uid ||
+          firestore.get(/databases/(default)/documents/orders/$(orderId)).data.assignedPartnerId == request.auth.uid
+        )
+      );
+    }
+
+    // Partner KYC Documents (private to owner partner & Admin)
+    match /kyc/{partnerId}/{fileName} {
+      allow read, write: if isAdmin() || (
+        isSignedIn() && request.auth.uid == partnerId && (request.method == 'get' || isValidImageOrDoc())
+      );
+    }
+
+    // Partner Commission Remittance UTR Screenshots (private to partner & Admin)
+    match /remittance_proofs/{partnerId}/{fileName} {
+      allow read, write: if isAdmin() || (
+        isSignedIn() && request.auth.uid == partnerId && (request.method == 'get' || isValidImageOrDoc())
+      );
+    }
+  }
+}

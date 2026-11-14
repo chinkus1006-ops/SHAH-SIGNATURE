@@ -1,0 +1,623 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // 1. Global Safety Net: Default Deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // ==================== GLOBAL PRIMITIVES & RBAC HELPERS ====================
+    function isValidId(id) {
+      return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedEmail() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isVerifiedIdentity() {
+      return isSignedIn() && (
+        request.auth.token.email_verified == true ||
+        request.auth.token.phone_number != null
+      );
+    }
+
+    function isAdmin() {
+      return isSignedIn() && (
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid)) ||
+        (request.auth.token.email_verified == true && (
+          request.auth.token.email == 'chinku.s1006@gmail.com' ||
+          request.auth.token.email == 'shahsignature@gmail.com'
+        ))
+      );
+    }
+
+    function isTerminalOrderStatus(s) {
+      return s == 'DELIVERED' || s == 'completed' || s == 'delivered' || s == 'CANCELLED' || s == 'cancelled';
+    }
+
+    // ==================== VALIDATION BLUEPRINTS ====================
+    function isValidOrder(data) {
+      return data.keys().hasAll(['id', 'orderNumber', 'customerId', 'status', 'pincode', 'totalAmount']) &&
+        isValidId(data.id) &&
+        data.orderNumber is string && data.orderNumber.size() >= 3 && data.orderNumber.size() <= 64 &&
+        isValidId(data.customerId) &&
+        data.pincode is string && data.pincode.size() >= 6 && data.pincode.size() <= 10 &&
+        data.status is string && data.status.size() >= 3 && data.status.size() <= 32 &&
+        data.totalAmount is number && data.totalAmount >= 0 && data.totalAmount <= 1000000 &&
+        (!('customerName' in data) || (data.customerName is string && data.customerName.size() <= 128)) &&
+        (!('customerPhone' in data) || (data.customerPhone is string && data.customerPhone.size() <= 32)) &&
+        (!('customerAddress' in data) || (data.customerAddress is string && data.customerAddress.size() <= 500)) &&
+        (!('locality' in data) || (data.locality is string && data.locality.size() <= 200)) &&
+        (!('assignedPartnerId' in data) || data.assignedPartnerId == null || isValidId(data.assignedPartnerId));
+    }
+
+    function isValidPartner(data) {
+      return data.keys().hasAll(['id', 'name', 'phone', 'pincode', 'status']) &&
+        isValidId(data.id) &&
+        data.name is string && data.name.size() >= 2 && data.name.size() <= 128 &&
+        data.phone is string && data.phone.size() >= 10 && data.phone.size() <= 32 &&
+        data.pincode is string && data.pincode.size() >= 6 && data.pincode.size() <= 10 &&
+        (data.status == 'active' || data.status == 'pending' || data.status == 'suspended') &&
+        (!('businessName' in data) || (data.businessName is string && data.businessName.size() <= 160)) &&
+        (!('email' in data) || (data.email is string && data.email.size() <= 160));
+    }
+
+    function isValidCustomer(data) {
+      return data.keys().hasAll(['id', 'name', 'phone']) &&
+        isValidId(data.id) &&
+        data.name is string && data.name.size() >= 2 && data.name.size() <= 128 &&
+        data.phone is string && data.phone.size() >= 10 && data.phone.size() <= 32 &&
+        (!('email' in data) || (data.email is string && data.email.size() <= 160)) &&
+        (!('isSuspended' in data) || data.isSuspended is bool);
+    }
+
+    function isValidGarmentEvidence(data) {
+      return data.keys().hasAll(['id', 'orderId', 'customerId', 'tagReference', 'verifiedCount']) &&
+        isValidId(data.id) &&
+        isValidId(data.orderId) &&
+        isValidId(data.customerId) &&
+        data.tagReference is string && data.tagReference.size() >= 3 && data.tagReference.size() <= 64 &&
+        data.verifiedCount is number && data.verifiedCount >= 0 && data.verifiedCount <= 1000 &&
+        (!('deliveredCount' in data) || (data.deliveredCount is number && data.deliveredCount >= 0 && data.deliveredCount <= 1000)) &&
+        (!('damageNotes' in data) || (data.damageNotes is string && data.damageNotes.size() <= 500)) &&
+        (!('customerInstructions' in data) || (data.customerInstructions is string && data.customerInstructions.size() <= 500)) &&
+        (!('specialCareNotes' in data) || (data.specialCareNotes is string && data.specialCareNotes.size() <= 500));
+    }
+
+    function isValidDisputeStatus(s) {
+      return s == 'CLAIM_SUBMITTED' ||
+        s == 'UNDER_REVIEW' ||
+        s == 'PARTNER_RESPONSE_PENDING' ||
+        s == 'CUSTOMER_RESPONSE_PENDING' ||
+        s == 'EVIDENCE_REVIEW' ||
+        s == 'RESOLUTION_PROPOSED' ||
+        s == 'RESOLVED' ||
+        s == 'REJECTED_WITH_REASON' ||
+        s == 'APPEAL_REQUESTED' ||
+        s == 'CLOSED' ||
+        s == 'open' ||
+        s == 'partner_responded' ||
+        s == 'under_admin_review' ||
+        s == 'resolved' ||
+        s == 'appealed';
+    }
+
+    function isValidDispute(data) {
+      return data.keys().hasAll(['id', 'orderId', 'customerId', 'partnerId', 'category', 'description', 'status']) &&
+        isValidId(data.id) &&
+        isValidId(data.orderId) &&
+        isValidId(data.customerId) &&
+        isValidId(data.partnerId) &&
+        data.category is string && data.category.size() <= 64 &&
+        data.description is string && data.description.size() >= 5 && data.description.size() <= 1200 &&
+        isValidDisputeStatus(data.status) &&
+        (!('affectedGarmentDetails' in data) || (data.affectedGarmentDetails is string && data.affectedGarmentDetails.size() <= 300)) &&
+        (!('decisionReason' in data) || (data.decisionReason is string && data.decisionReason.size() <= 1000)) &&
+        (!('investigationFindings' in data) || (data.investigationFindings is string && data.investigationFindings.size() <= 1500));
+    }
+
+    function isValidCompensationRecord(data) {
+      return data.keys().hasAll(['id', 'disputeId', 'orderId', 'compensationType', 'approvedAmountInr', 'settlementStatus']) &&
+        isValidId(data.id) &&
+        isValidId(data.disputeId) &&
+        isValidId(data.orderId) &&
+        data.compensationType is string && data.compensationType.size() <= 64 &&
+        data.approvedAmountInr is number && data.approvedAmountInr >= 0 && data.approvedAmountInr <= 500000 &&
+        (data.settlementStatus == 'proposed' || data.settlementStatus == 'approved_pending_payout' || data.settlementStatus == 'settled' || data.settlementStatus == 'disputed' || data.settlementStatus == 'cancelled') &&
+        (!('deductedFromCommission' in data) || data.deductedFromCommission == false);
+    }
+
+    function isValidDisputeAuditLog(data) {
+      return data.keys().hasAll(['id', 'disputeId', 'actorRole', 'action', 'note']) &&
+        isValidId(data.id) &&
+        isValidId(data.disputeId) &&
+        data.actorRole is string && data.actorRole.size() <= 64 &&
+        data.action is string && data.action.size() <= 128 &&
+        data.note is string && data.note.size() <= 1000;
+    }
+
+    function isValidCommissionEntry(data) {
+      return data.keys().hasAll(['id', 'orderId', 'partnerId', 'commissionAmount', 'remittanceStatus']) &&
+        isValidId(data.id) &&
+        isValidId(data.orderId) &&
+        isValidId(data.partnerId) &&
+        data.commissionAmount is number && data.commissionAmount >= 0 &&
+        (data.remittanceStatus == 'unpaid' || data.remittanceStatus == 'submitted' || data.remittanceStatus == 'verified' || data.remittanceStatus == 'overdue');
+    }
+
+    function isValidRemittance(data) {
+      return data.keys().hasAll(['id', 'partnerId', 'amountSubmitted', 'utrReference', 'status']) &&
+        isValidId(data.id) &&
+        isValidId(data.partnerId) &&
+        data.amountSubmitted is number && data.amountSubmitted > 0 &&
+        data.utrReference is string && data.utrReference.size() >= 6 && data.utrReference.size() <= 128 &&
+        (data.status == 'pending_verification' || data.status == 'verified' || data.status == 'rejected');
+    }
+
+    function isValidServiceArea(data) {
+      return data.keys().hasAll(['pincode', 'areaName', 'city', 'isActive']) &&
+        data.pincode is string && data.pincode.size() >= 6 && data.pincode.size() <= 10 &&
+        data.areaName is string && data.areaName.size() <= 128 &&
+        data.city is string && data.city.size() <= 128 &&
+        data.isActive is bool;
+    }
+
+    function isValidServiceCategory(data) {
+      return data.keys().hasAll(['id', 'nameEn', 'isActive']) &&
+        isValidId(data.id) &&
+        data.nameEn is string && data.nameEn.size() <= 128 &&
+        data.isActive is bool;
+    }
+
+    function isValidGarment(data) {
+      return data.keys().hasAll(['id', 'nameEn', 'category', 'price']) &&
+        isValidId(data.id) &&
+        data.nameEn is string && data.nameEn.size() <= 128 &&
+        data.category is string && data.category.size() <= 64 &&
+        data.price is number && data.price >= 0;
+    }
+
+    function isValidCoupon(data) {
+      return data.keys().hasAll(['code', 'minOrder', 'isActive']) &&
+        data.code is string && data.code.size() >= 3 && data.code.size() <= 32 &&
+        data.minOrder is number && data.minOrder >= 0 &&
+        data.isActive is bool;
+    }
+
+    function isValidReview(data) {
+      return data.keys().hasAll(['id', 'orderId', 'customerId', 'partnerId', 'rating', 'isVerifiedDelivery']) &&
+        isValidId(data.id) &&
+        isValidId(data.orderId) &&
+        isValidId(data.customerId) &&
+        isValidId(data.partnerId) &&
+        data.rating is number && data.rating >= 1 && data.rating <= 5 &&
+        data.isVerifiedDelivery == true &&
+        (!('comment' in data) || (data.comment is string && data.comment.size() <= 600));
+    }
+
+    function isValidSupportTicket(data) {
+      return data.keys().hasAll(['id', 'subject', 'message', 'status']) &&
+        isValidId(data.id) &&
+        data.subject is string && data.subject.size() >= 3 && data.subject.size() <= 200 &&
+        data.message is string && data.message.size() >= 5 && data.message.size() <= 1200 &&
+        (data.status == 'open' || data.status == 'in_progress' || data.status == 'resolved');
+    }
+
+    function isValidBulkEnquiry(data) {
+      return data.keys().hasAll(['id', 'organizationName', 'phone', 'status']) &&
+        isValidId(data.id) &&
+        data.organizationName is string && data.organizationName.size() >= 2 && data.organizationName.size() <= 200 &&
+        data.phone is string && data.phone.size() >= 10 && data.phone.size() <= 32 &&
+        (data.status == 'new' || data.status == 'contacted' || data.status == 'quoted' || data.status == 'active');
+    }
+
+    // ==================== ADMINS REGISTRY ====================
+    match /admins/{adminId} {
+      allow get: if isValidId(adminId) && (isAdmin() || (isSignedIn() && request.auth.uid == adminId));
+      allow list: if isAdmin();
+      allow write: if false;
+    }
+
+    // ==================== ORDERS COLLECTION ====================
+    match /orders/{orderId} {
+      allow get: if isValidId(orderId) && isSignedIn() && (
+        isAdmin() ||
+        existing().customerId == request.auth.uid ||
+        existing().assignedPartnerId == request.auth.uid ||
+        existing().currentOfferPartnerId == request.auth.uid
+      );
+
+      allow list: if isSignedIn() && (
+        existing().customerId == request.auth.uid ||
+        existing().assignedPartnerId == request.auth.uid ||
+        existing().currentOfferPartnerId == request.auth.uid ||
+        (request.auth.token.email_verified == true && (
+          request.auth.token.email == 'chinku.s1006@gmail.com' ||
+          request.auth.token.email == 'shahsignature@gmail.com'
+        ))
+      );
+
+      allow create: if isValidId(orderId) &&
+        isVerifiedIdentity() &&
+        isValidOrder(incoming()) &&
+        incoming().customerId == request.auth.uid &&
+        (incoming().status == 'BOOKED' || incoming().status == 'order_placed' || incoming().status == 'searching_for_partner') &&
+        incoming().assignedPartnerId == null;
+
+      allow update: if isValidId(orderId) &&
+        isVerifiedIdentity() &&
+        isValidOrder(incoming()) &&
+        incoming().customerId == existing().customerId && (
+          isAdmin() ||
+          (
+            !isTerminalOrderStatus(existing().status) &&
+            (
+              // Customer cancelling before pickup
+              (
+                existing().customerId == request.auth.uid &&
+                (existing().status == 'BOOKED' || existing().status == 'PARTNER_ASSIGNED' || existing().status == 'PICKUP_SCHEDULED' || existing().status == 'order_placed' || existing().status == 'searching_for_partner') &&
+                incoming().diff(existing()).affectedKeys().hasOnly(['status', 'cancellationReason', 'cancelledByRole', 'logs', 'updatedAt']) &&
+                (incoming().status == 'CANCELLED' || incoming().status == 'cancelled')
+              ) ||
+              // Partner claiming unassigned order atomically
+              (
+                existing().assignedPartnerId == null &&
+                incoming().assignedPartnerId == request.auth.uid &&
+                exists(/databases/$(database)/documents/partners/$(request.auth.uid)) &&
+                get(/databases/$(database)/documents/partners/$(request.auth.uid)).data.status == 'active' &&
+                incoming().diff(existing()).affectedKeys().hasOnly(['status', 'assignedPartnerId', 'assignedPartnerName', 'assignedPartnerPhone', 'assignedAt', 'acceptedAt', 'logs', 'updatedAt'])
+              ) ||
+              // Assigned partner advancing lifecycle
+              (
+                existing().assignedPartnerId == request.auth.uid &&
+                incoming().assignedPartnerId == existing().assignedPartnerId &&
+                incoming().diff(existing()).affectedKeys().hasOnly(['status', 'pickedUpAt', 'deliveredAt', 'completedAt', 'garmentEvidence', 'paymentStatus', 'logs', 'updatedAt'])
+              )
+            )
+          )
+        );
+
+      allow delete: if isValidId(orderId) && isAdmin();
+    }
+
+    // ==================== PARTNERS COLLECTION ====================
+    match /partners/{partnerId} {
+      allow get: if isValidId(partnerId) && isSignedIn() && (
+        isAdmin() ||
+        request.auth.uid == partnerId ||
+        existing().ownerUid == request.auth.uid
+      );
+
+      allow list: if isSignedIn() && (
+        existing().ownerUid == request.auth.uid ||
+        existing().status == 'active' ||
+        (request.auth.token.email_verified == true && (
+          request.auth.token.email == 'chinku.s1006@gmail.com' ||
+          request.auth.token.email == 'shahsignature@gmail.com'
+        ))
+      );
+
+      allow create: if isValidId(partnerId) &&
+        isVerifiedIdentity() &&
+        isValidPartner(incoming()) &&
+        incoming().status == 'pending' &&
+        (!('kycVerified' in incoming()) || incoming().kycVerified == false) &&
+        (!('ownerUid' in incoming()) || incoming().ownerUid == request.auth.uid);
+
+      allow update: if isValidId(partnerId) &&
+        isVerifiedIdentity() &&
+        isValidPartner(incoming()) && (
+          isAdmin() ||
+          (
+            (request.auth.uid == partnerId || existing().ownerUid == request.auth.uid) &&
+            incoming().status == existing().status &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['isOnline', 'workingHours', 'serviceAddress', 'upiId', 'documents', 'lastLoginAt'])
+          )
+        );
+
+      allow delete: if isValidId(partnerId) && isAdmin();
+    }
+
+    // ==================== CUSTOMERS COLLECTION (STRICT PII ISOLATION) ====================
+    match /customers/{customerId} {
+      allow get: if isValidId(customerId) && isSignedIn() && (isOwnerOrAdmin(customerId));
+      allow list: if isSignedIn() && (
+        existing().id == request.auth.uid ||
+        (request.auth.token.email_verified == true && (
+          request.auth.token.email == 'chinku.s1006@gmail.com' ||
+          request.auth.token.email == 'shahsignature@gmail.com'
+        ))
+      );
+
+      allow create: if isValidId(customerId) &&
+        isVerifiedIdentity() &&
+        isValidCustomer(incoming()) &&
+        request.auth.uid == customerId &&
+        incoming().id == request.auth.uid &&
+        (!('isSuspended' in incoming()) || incoming().isSuspended == false);
+
+      allow update: if isValidId(customerId) &&
+        isVerifiedIdentity() &&
+        isValidCustomer(incoming()) &&
+        incoming().id == existing().id && (
+          isAdmin() ||
+          (
+            request.auth.uid == customerId &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['name', 'phone', 'email', 'addresses', 'lastLoginAt'])
+          )
+        );
+
+      allow delete: if isValidId(customerId) && isAdmin();
+    }
+
+    function isOwnerOrAdmin(uid) {
+      return request.auth.uid == uid || isAdmin();
+    }
+
+    // ==================== GARMENT EVIDENCE ====================
+    match /garment_evidence/{evidenceId} {
+      allow get: if isValidId(evidenceId) && isSignedIn() && (
+        isAdmin() ||
+        existing().customerId == request.auth.uid ||
+        existing().partnerId == request.auth.uid
+      );
+      allow list: if isSignedIn() && (
+        existing().customerId == request.auth.uid ||
+        existing().partnerId == request.auth.uid ||
+        (request.auth.token.email_verified == true && (
+          request.auth.token.email == 'chinku.s1006@gmail.com' ||
+          request.auth.token.email == 'shahsignature@gmail.com'
+        ))
+      );
+      allow create: if isValidId(evidenceId) &&
+        isVerifiedIdentity() &&
+        isValidGarmentEvidence(incoming()) &&
+        exists(/databases/$(database)/documents/orders/$(incoming().orderId)) &&
+        (isAdmin() || incoming().partnerId == request.auth.uid);
+      allow update: if isValidId(evidenceId) &&
+        isVerifiedIdentity() &&
+        isValidGarmentEvidence(incoming()) && (
+          isAdmin() ||
+          (existing().customerId == request.auth.uid && incoming().diff(existing()).affectedKeys().hasOnly(['customerSignOff', 'customerSignedAt', 'deliveryConfirmedByCustomer', 'deliveryConfirmedAt', 'customerInstructions'])) ||
+          (existing().partnerId == request.auth.uid && incoming().diff(existing()).affectedKeys().hasOnly(['verifiedCount', 'deliveredCount', 'garmentRecords', 'hasPreExistingDamage', 'damageNotes', 'stainChecklist', 'customerInstructions', 'specialCareNotes', 'pickupPhotoUrls', 'beforeServicePhotoUrls', 'afterServicePhotoUrls', 'deliveryPhotoUrls', 'serviceCompletedAt', 'pickupOtpVerified', 'deliveryOtpVerified', 'updatedAt']))
+        );
+      allow delete: if isValidId(evidenceId) && isAdmin();
+    }
+
+    // ==================== CUSTOMER PROTECTION & DISPUTES ====================
+    match /disputes/{disputeId} {
+      allow get: if isValidId(disputeId) && isSignedIn() && (
+        isAdmin() ||
+        existing().customerId == request.auth.uid ||
+        existing().partnerId == request.auth.uid
+      );
+      allow list: if isSignedIn() && (
+        existing().customerId == request.auth.uid ||
+        existing().partnerId == request.auth.uid ||
+        (request.auth.token.email_verified == true && (
+          request.auth.token.email == 'chinku.s1006@gmail.com' ||
+          request.auth.token.email == 'shahsignature@gmail.com'
+        ))
+      );
+      allow create: if isValidId(disputeId) &&
+        isVerifiedIdentity() &&
+        isValidDispute(incoming()) &&
+        incoming().customerId == request.auth.uid &&
+        (incoming().status == 'CLAIM_SUBMITTED' || incoming().status == 'open') &&
+        exists(/databases/$(database)/documents/orders/$(incoming().orderId));
+      allow update: if isValidId(disputeId) &&
+        isVerifiedIdentity() &&
+        isValidDispute(incoming()) &&
+        incoming().orderId == existing().orderId &&
+        incoming().customerId == existing().customerId &&
+        incoming().partnerId == existing().partnerId && (
+          isAdmin() ||
+          (
+            existing().status != 'CLOSED' &&
+            (
+              // Assigned partner submitting response, photos, pre-existing damage notes, or answering Admin Q&A
+              (
+                existing().partnerId == request.auth.uid &&
+                (existing().status == 'CLAIM_SUBMITTED' || existing().status == 'UNDER_REVIEW' || existing().status == 'PARTNER_RESPONSE_PENDING' || existing().status == 'open') &&
+                (incoming().status == 'EVIDENCE_REVIEW' || incoming().status == 'partner_responded') &&
+                incoming().diff(existing()).affectedKeys().hasOnly(['partnerResponse', 'partnerPreExistingDamageReported', 'partnerPreExistingNotes', 'partnerPhotoUrls', 'partnerPickupPhotoUrls', 'partnerServicePhotoUrls', 'partnerDeliveryPhotoUrls', 'partnerRespondedAt', 'adminQuestions', 'auditTrail', 'status', 'updatedAt'])
+              ) ||
+              // Customer answering Admin follow-up when requested
+              (
+                existing().customerId == request.auth.uid &&
+                existing().status == 'CUSTOMER_RESPONSE_PENDING' &&
+                incoming().status == 'EVIDENCE_REVIEW' &&
+                incoming().diff(existing()).affectedKeys().hasOnly(['customerFollowUpNote', 'customerPhotoUrls', 'supportingDocUrls', 'adminQuestions', 'auditTrail', 'status', 'updatedAt'])
+              ) ||
+              // Customer or Partner filing an Appeal for second review after RESOLVED or REJECTED_WITH_REASON
+              (
+                (existing().customerId == request.auth.uid || existing().partnerId == request.auth.uid) &&
+                (existing().status == 'RESOLVED' || existing().status == 'REJECTED_WITH_REASON' || existing().status == 'resolved') &&
+                (incoming().status == 'APPEAL_REQUESTED' || incoming().status == 'appealed') &&
+                incoming().diff(existing()).affectedKeys().hasOnly(['appealNote', 'appealSubmittedBy', 'appealedAt', 'auditTrail', 'status', 'updatedAt'])
+              )
+            )
+          )
+        );
+      allow delete: if isValidId(disputeId) && isAdmin();
+    }
+
+    // ==================== COMPENSATION & DISPUTE AUDIT LOGS ====================
+    match /compensation_records/{compId} {
+      allow get: if isValidId(compId) && isSignedIn() && (
+        isAdmin() ||
+        get(/databases/$(database)/documents/disputes/$(existing().disputeId)).data.customerId == request.auth.uid ||
+        get(/databases/$(database)/documents/disputes/$(existing().disputeId)).data.partnerId == request.auth.uid
+      );
+      allow list: if isSignedIn() && (
+        request.auth.token.email_verified == true && (
+          request.auth.token.email == 'chinku.s1006@gmail.com' ||
+          request.auth.token.email == 'shahsignature@gmail.com'
+        )
+      );
+      allow create, update: if isValidId(compId) && isAdmin() && isValidCompensationRecord(incoming());
+      allow delete: if false; // Financial determination records cannot be deleted
+    }
+
+    match /dispute_audit_logs/{logId} {
+      allow get: if isValidId(logId) && isSignedIn() && (
+        isAdmin() ||
+        get(/databases/$(database)/documents/disputes/$(existing().disputeId)).data.customerId == request.auth.uid ||
+        get(/databases/$(database)/documents/disputes/$(existing().disputeId)).data.partnerId == request.auth.uid
+      );
+      allow list: if isSignedIn() && (
+        request.auth.token.email_verified == true && (
+          request.auth.token.email == 'chinku.s1006@gmail.com' ||
+          request.auth.token.email == 'shahsignature@gmail.com'
+        )
+      );
+      allow create: if isValidId(logId) &&
+        isVerifiedIdentity() &&
+        isValidDisputeAuditLog(incoming()) && (
+          isAdmin() ||
+          (
+            incoming().actorRole != 'SUPER_ADMIN' &&
+            incoming().actorRole != 'SYSTEM' &&
+            exists(/databases/$(database)/documents/disputes/$(incoming().disputeId)) &&
+            (
+              get(/databases/$(database)/documents/disputes/$(incoming().disputeId)).data.customerId == request.auth.uid ||
+              get(/databases/$(database)/documents/disputes/$(incoming().disputeId)).data.partnerId == request.auth.uid
+            )
+          )
+        );
+      allow update, delete: if false; // Immutable dispute audit log
+    }
+
+    // ==================== COMMISSION LEDGER & REMITTANCES ====================
+    match /commission_ledger/{entryId} {
+      allow get: if isValidId(entryId) && isSignedIn() && (isAdmin() || existing().partnerId == request.auth.uid);
+      allow list: if isSignedIn() && (
+        existing().partnerId == request.auth.uid ||
+        (request.auth.token.email_verified == true && (
+          request.auth.token.email == 'chinku.s1006@gmail.com' ||
+          request.auth.token.email == 'shahsignature@gmail.com'
+        ))
+      );
+      allow create: if isValidId(entryId) && isAdmin() && isValidCommissionEntry(incoming());
+      allow update: if isValidId(entryId) && isAdmin() && isValidCommissionEntry(incoming()) &&
+        incoming().orderTotal == existing().orderTotal &&
+        incoming().commissionAmount == existing().commissionAmount;
+      allow delete: if false; // Append-only financial ledger
+    }
+
+    match /commission_remittances/{remittanceId} {
+      allow get: if isValidId(remittanceId) && isSignedIn() && (isAdmin() || existing().partnerId == request.auth.uid);
+      allow list: if isSignedIn() && (
+        existing().partnerId == request.auth.uid ||
+        (request.auth.token.email_verified == true && (
+          request.auth.token.email == 'chinku.s1006@gmail.com' ||
+          request.auth.token.email == 'shahsignature@gmail.com'
+        ))
+      );
+      allow create: if isValidId(remittanceId) &&
+        isVerifiedIdentity() &&
+        isValidRemittance(incoming()) &&
+        incoming().partnerId == request.auth.uid &&
+        incoming().status == 'pending_verification';
+      allow update: if isValidId(remittanceId) && isAdmin() && isValidRemittance(incoming());
+      allow delete: if false;
+    }
+
+    // ==================== STOREFRONT CATALOG & AREAS (NON-PII) ====================
+    match /service_areas/{pincode} {
+      allow get: if isValidId(pincode);
+      allow list: if resource.data.isActive == true || (isSignedIn() && request.auth.token.email_verified == true && (request.auth.token.email == 'chinku.s1006@gmail.com' || request.auth.token.email == 'shahsignature@gmail.com'));
+      allow create, update: if isValidId(pincode) && isAdmin() && isValidServiceArea(incoming());
+      allow delete: if isValidId(pincode) && isAdmin();
+    }
+
+    match /services/{serviceId} {
+      allow get: if isValidId(serviceId);
+      allow list: if resource.data.isActive == true || (isSignedIn() && request.auth.token.email_verified == true && (request.auth.token.email == 'chinku.s1006@gmail.com' || request.auth.token.email == 'shahsignature@gmail.com'));
+      allow create, update: if isValidId(serviceId) && isAdmin() && isValidServiceCategory(incoming());
+      allow delete: if isValidId(serviceId) && isAdmin();
+    }
+
+    match /garments/{garmentId} {
+      allow get: if isValidId(garmentId);
+      allow list: if resource.data.price >= 0;
+      allow create, update: if isValidId(garmentId) && isAdmin() && isValidGarment(incoming());
+      allow delete: if isValidId(garmentId) && isAdmin();
+    }
+
+    match /coupons/{code} {
+      allow get: if isValidId(code) && isSignedIn();
+      allow list: if isSignedIn() && (
+        resource.data.isActive == true ||
+        (request.auth.token.email_verified == true && (
+          request.auth.token.email == 'chinku.s1006@gmail.com' ||
+          request.auth.token.email == 'shahsignature@gmail.com'
+        ))
+      );
+      allow create, update: if isValidId(code) && isAdmin() && isValidCoupon(incoming());
+      allow delete: if isValidId(code) && isAdmin();
+    }
+
+    match /reviews/{reviewId} {
+      allow get: if isValidId(reviewId);
+      allow list: if resource.data.isVerifiedDelivery == true;
+      allow create: if isValidId(reviewId) &&
+        isVerifiedIdentity() &&
+        isValidReview(incoming()) &&
+        incoming().customerId == request.auth.uid &&
+        exists(/databases/$(database)/documents/orders/$(incoming().orderId)) &&
+        get(/databases/$(database)/documents/orders/$(incoming().orderId)).data.customerId == request.auth.uid;
+      allow update, delete: if isValidId(reviewId) && isAdmin();
+    }
+
+    // ==================== SUPPORT, BULK ENQUIRIES, SETTINGS, AUDIT ====================
+    match /support_tickets/{ticketId} {
+      allow get: if isValidId(ticketId) && isSignedIn() && (isAdmin() || existing().customerId == request.auth.uid);
+      allow list: if isSignedIn() && (
+        existing().customerId == request.auth.uid ||
+        (request.auth.token.email_verified == true && (
+          request.auth.token.email == 'chinku.s1006@gmail.com' ||
+          request.auth.token.email == 'shahsignature@gmail.com'
+        ))
+      );
+      allow create: if isValidId(ticketId) && isVerifiedIdentity() && isValidSupportTicket(incoming()) && incoming().status == 'open';
+      allow update: if isValidId(ticketId) && isAdmin() && isValidSupportTicket(incoming());
+      allow delete: if isValidId(ticketId) && isAdmin();
+    }
+
+    match /bulk_enquiries/{enquiryId} {
+      allow get: if isValidId(enquiryId) && isAdmin();
+      allow list: if isAdmin();
+      allow create: if isValidId(enquiryId) && isValidBulkEnquiry(incoming()) && incoming().status == 'new';
+      allow update, delete: if isValidId(enquiryId) && isAdmin();
+    }
+
+    match /app_settings/{settingId} {
+      allow get: if isValidId(settingId);
+      allow list: if false;
+      allow create, update: if isValidId(settingId) && isAdmin();
+      allow delete: if false;
+    }
+
+    match /audit_logs/{logId} {
+      allow get: if isValidId(logId) && isAdmin();
+      allow list: if isAdmin();
+      allow create: if isValidId(logId) && isAdmin();
+      allow update, delete: if false;
+    }
+  }
+}

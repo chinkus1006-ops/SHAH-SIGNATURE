@@ -1,0 +1,398 @@
+{
+  "entities": {
+    "Order": {
+      "title": "Order",
+      "description": "Service order record with status lifecycle, dispatch queue, and totals",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "orderNumber": { "type": "string", "maxLength": 64 },
+        "customerId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "customerName": { "type": "string", "maxLength": 128 },
+        "customerPhone": { "type": "string", "maxLength": 32 },
+        "customerAddress": { "type": "string", "maxLength": 500 },
+        "pincode": { "type": "string", "maxLength": 10 },
+        "locality": { "type": "string", "maxLength": 200 },
+        "serviceType": { "type": "string", "maxLength": 64 },
+        "deliveryMode": { "type": "string", "enum": ["home_valet", "self_drop"] },
+        "status": {
+          "type": "string",
+          "enum": [
+            "BOOKED",
+            "PARTNER_ASSIGNED",
+            "PICKUP_SCHEDULED",
+            "PICKED_UP",
+            "PROCESSING",
+            "READY_FOR_DELIVERY",
+            "OUT_FOR_DELIVERY",
+            "DELIVERED",
+            "CANCELLED",
+            "DISPUTED",
+            "order_placed",
+            "searching_for_partner",
+            "partner_assigned",
+            "pickup_scheduled",
+            "picked_up",
+            "processing",
+            "ready_for_delivery",
+            "out_for_delivery",
+            "completed",
+            "cancelled"
+          ]
+        },
+        "assignedPartnerId": { "type": "string", "maxLength": 128 },
+        "assignedPartnerName": { "type": "string", "maxLength": 128 },
+        "assignedPartnerPhone": { "type": "string", "maxLength": 32 },
+        "subtotal": { "type": "number" },
+        "deliveryCharge": { "type": "number" },
+        "discount": { "type": "number" },
+        "totalAmount": { "type": "number" },
+        "pickupSlot": { "type": "string", "maxLength": 64 },
+        "createdAt": { "type": "string", "maxLength": 64 },
+        "updatedAt": { "type": "string", "maxLength": 64 }
+      },
+      "required": ["id", "orderNumber", "customerId", "status", "pincode", "totalAmount"]
+    },
+    "Partner": {
+      "title": "Partner",
+      "description": "Service partner profile, KYC state, and performance metrics",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "ownerUid": { "type": "string", "maxLength": 128 },
+        "name": { "type": "string", "maxLength": 128 },
+        "businessName": { "type": "string", "maxLength": 160 },
+        "phone": { "type": "string", "maxLength": 32 },
+        "pincode": { "type": "string", "maxLength": 10 },
+        "isOnline": { "type": "boolean" },
+        "kycVerified": { "type": "boolean" },
+        "status": { "type": "string", "enum": ["active", "pending", "suspended"] }
+      },
+      "required": ["id", "name", "phone", "pincode", "status"]
+    },
+    "Customer": {
+      "title": "Customer",
+      "description": "Customer profile record isolated to owner and admin",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "name": { "type": "string", "maxLength": 128 },
+        "phone": { "type": "string", "maxLength": 32 },
+        "email": { "type": "string", "maxLength": 160 },
+        "isSuspended": { "type": "boolean" },
+        "rewardPoints": { "type": "number" }
+      },
+      "required": ["id", "name", "phone"]
+    },
+    "GarmentEvidence": {
+      "title": "GarmentEvidence",
+      "description": "Garment count, per-garment condition records, pickup/service/delivery photos, and OTP sign-off",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "orderId": { "type": "string", "maxLength": 128 },
+        "customerId": { "type": "string", "maxLength": 128 },
+        "partnerId": { "type": "string", "maxLength": 128 },
+        "tagReference": { "type": "string", "maxLength": 64 },
+        "expectedCount": { "type": "number" },
+        "verifiedCount": { "type": "number" },
+        "deliveredCount": { "type": "number" },
+        "damageNotes": { "type": "string", "maxLength": 500 },
+        "customerInstructions": { "type": "string", "maxLength": 500 },
+        "specialCareNotes": { "type": "string", "maxLength": 500 },
+        "serviceCompletedAt": { "type": "string", "maxLength": 64 },
+        "customerSignOff": { "type": "boolean" },
+        "deliveryConfirmedByCustomer": { "type": "boolean" }
+      },
+      "required": ["id", "orderId", "customerId", "tagReference", "verifiedCount"]
+    },
+    "OrderDispute": {
+      "title": "OrderDispute",
+      "description": "Customer protection claim, partner counter-evidence, Q&A, appeal, and audit log",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "orderId": { "type": "string", "maxLength": 128 },
+        "customerId": { "type": "string", "maxLength": 128 },
+        "partnerId": { "type": "string", "maxLength": 128 },
+        "category": { "type": "string", "maxLength": 64 },
+        "affectedGarmentDetails": { "type": "string", "maxLength": 300 },
+        "description": { "type": "string", "maxLength": 1200 },
+        "requestedResolution": { "type": "string", "maxLength": 64 },
+        "partnerResponse": { "type": "string", "maxLength": 1200 },
+        "investigationFindings": { "type": "string", "maxLength": 1500 },
+        "decisionReason": { "type": "string", "maxLength": 1000 },
+        "compensationId": { "type": "string", "maxLength": 128 },
+        "status": {
+          "type": "string",
+          "enum": [
+            "CLAIM_SUBMITTED",
+            "UNDER_REVIEW",
+            "PARTNER_RESPONSE_PENDING",
+            "CUSTOMER_RESPONSE_PENDING",
+            "EVIDENCE_REVIEW",
+            "RESOLUTION_PROPOSED",
+            "RESOLVED",
+            "REJECTED_WITH_REASON",
+            "APPEAL_REQUESTED",
+            "CLOSED",
+            "open",
+            "partner_responded",
+            "under_admin_review",
+            "resolved",
+            "appealed"
+          ]
+        }
+      },
+      "required": ["id", "orderId", "customerId", "partnerId", "category", "description", "status"]
+    },
+    "CompensationRecord": {
+      "title": "CompensationRecord",
+      "description": "Fair compensation & refund determination linked to a reviewed dispute",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "disputeId": { "type": "string", "maxLength": 128 },
+        "orderId": { "type": "string", "maxLength": 128 },
+        "compensationType": { "type": "string", "maxLength": 64 },
+        "responsibleParty": { "type": "string", "maxLength": 64 },
+        "approvedAmountInr": { "type": "number" },
+        "valuationBasis": { "type": "string", "maxLength": 400 },
+        "reason": { "type": "string", "maxLength": 600 },
+        "contractualBasis": { "type": "string", "maxLength": 400 },
+        "paymentResponsibility": { "type": "string", "maxLength": 64 },
+        "settlementStatus": { "type": "string", "enum": ["proposed", "approved_pending_payout", "settled", "disputed", "cancelled"] }
+      },
+      "required": ["id", "disputeId", "orderId", "compensationType", "approvedAmountInr", "settlementStatus"]
+    },
+    "DisputeAuditLog": {
+      "title": "DisputeAuditLog",
+      "description": "Immutable dispute event & evidence audit record",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "disputeId": { "type": "string", "maxLength": 128 },
+        "actorRole": { "type": "string", "maxLength": 64 },
+        "action": { "type": "string", "maxLength": 128 },
+        "note": { "type": "string", "maxLength": 1000 }
+      },
+      "required": ["id", "disputeId", "actorRole", "action", "note"]
+    },
+    "CommissionLedgerEntry": {
+      "title": "CommissionLedgerEntry",
+      "description": "Append-only 15% platform commission entry per order",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "orderId": { "type": "string", "maxLength": 128 },
+        "partnerId": { "type": "string", "maxLength": 128 },
+        "weekKey": { "type": "string", "maxLength": 32 },
+        "orderTotal": { "type": "number" },
+        "commissionRate": { "type": "number" },
+        "commissionAmount": { "type": "number" },
+        "remittanceStatus": { "type": "string", "enum": ["unpaid", "submitted", "verified", "overdue"] }
+      },
+      "required": ["id", "orderId", "partnerId", "commissionAmount", "remittanceStatus"]
+    },
+    "CommissionRemittance": {
+      "title": "CommissionRemittance",
+      "description": "Partner weekly UTR remittance proof submitted for Admin verification",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "partnerId": { "type": "string", "maxLength": 128 },
+        "weekKey": { "type": "string", "maxLength": 32 },
+        "amountSubmitted": { "type": "number" },
+        "utrReference": { "type": "string", "maxLength": 128 },
+        "status": { "type": "string", "enum": ["pending_verification", "verified", "rejected"] }
+      },
+      "required": ["id", "partnerId", "amountSubmitted", "utrReference", "status"]
+    },
+    "ServiceArea": {
+      "title": "ServiceArea",
+      "description": "Pan-India PIN code coverage zone configuration",
+      "type": "object",
+      "properties": {
+        "pincode": { "type": "string", "maxLength": 10 },
+        "areaName": { "type": "string", "maxLength": 128 },
+        "city": { "type": "string", "maxLength": 128 },
+        "state": { "type": "string", "maxLength": 128 },
+        "isActive": { "type": "boolean" },
+        "minOrderAmount": { "type": "number" }
+      },
+      "required": ["pincode", "areaName", "city", "isActive"]
+    },
+    "ServiceCategory": {
+      "title": "ServiceCategory",
+      "description": "Scalable garment care service category",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 64 },
+        "nameEn": { "type": "string", "maxLength": 128 },
+        "isActive": { "type": "boolean" }
+      },
+      "required": ["id", "nameEn", "isActive"]
+    },
+    "GarmentCatalogItem": {
+      "title": "GarmentCatalogItem",
+      "description": "Garment pricing item managed by Super Admin",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "nameEn": { "type": "string", "maxLength": 128 },
+        "category": { "type": "string", "maxLength": 64 },
+        "price": { "type": "number" }
+      },
+      "required": ["id", "nameEn", "category", "price"]
+    },
+    "Coupon": {
+      "title": "Coupon",
+      "description": "Promotional discount coupon managed by Admin",
+      "type": "object",
+      "properties": {
+        "code": { "type": "string", "maxLength": 32 },
+        "minOrder": { "type": "number" },
+        "isActive": { "type": "boolean" }
+      },
+      "required": ["code", "minOrder", "isActive"]
+    },
+    "VerifiedReview": {
+      "title": "VerifiedReview",
+      "description": "Genuine customer review linked to a delivered order",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "orderId": { "type": "string", "maxLength": 128 },
+        "customerId": { "type": "string", "maxLength": 128 },
+        "partnerId": { "type": "string", "maxLength": 128 },
+        "rating": { "type": "number" },
+        "comment": { "type": "string", "maxLength": 600 },
+        "isVerifiedDelivery": { "type": "boolean" }
+      },
+      "required": ["id", "orderId", "customerId", "partnerId", "rating", "isVerifiedDelivery"]
+    },
+    "SupportTicket": {
+      "title": "SupportTicket",
+      "description": "Customer or partner support inquiry",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "customerId": { "type": "string", "maxLength": 128 },
+        "subject": { "type": "string", "maxLength": 200 },
+        "message": { "type": "string", "maxLength": 1200 },
+        "status": { "type": "string", "enum": ["open", "in_progress", "resolved"] }
+      },
+      "required": ["id", "subject", "message", "status"]
+    },
+    "BulkEnquiry": {
+      "title": "BulkEnquiry",
+      "description": "Corporate, PG, hostel, and hotel bulk laundry enquiry",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "organizationName": { "type": "string", "maxLength": 200 },
+        "phone": { "type": "string", "maxLength": 32 },
+        "pincode": { "type": "string", "maxLength": 10 },
+        "status": { "type": "string", "enum": ["new", "contacted", "quoted", "active"] }
+      },
+      "required": ["id", "organizationName", "phone", "status"]
+    },
+    "AppSettings": {
+      "title": "AppSettings",
+      "description": "Admin-managed platform and business configuration",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 64 },
+        "brandName": { "type": "string", "maxLength": 128 },
+        "platformCommissionPercent": { "type": "number" }
+      },
+      "required": ["id"]
+    },
+    "AuditLog": {
+      "title": "AuditLog",
+      "description": "Immutable security and operational audit trail",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "action": { "type": "string", "maxLength": 128 },
+        "actorRole": { "type": "string", "maxLength": 64 },
+        "details": { "type": "string", "maxLength": 1000 }
+      },
+      "required": ["id", "action", "actorRole", "details"]
+    }
+  },
+  "firestore": {
+    "/orders/{orderId}": {
+      "schema": "Order",
+      "description": "Real-time service orders collection"
+    },
+    "/partners/{partnerId}": {
+      "schema": "Partner",
+      "description": "Service partner profiles and KYC verification"
+    },
+    "/customers/{customerId}": {
+      "schema": "Customer",
+      "description": "Private customer records"
+    },
+    "/garment_evidence/{evidenceId}": {
+      "schema": "GarmentEvidence",
+      "description": "Pickup, service, and delivery garment evidence and OTP verification"
+    },
+    "/disputes/{disputeId}": {
+      "schema": "OrderDispute",
+      "description": "Customer protection claims, partner counter-evidence, Q&A, and appeals"
+    },
+    "/compensation_records/{compId}": {
+      "schema": "CompensationRecord",
+      "description": "Admin-approved compensation and refund settlement records"
+    },
+    "/dispute_audit_logs/{logId}": {
+      "schema": "DisputeAuditLog",
+      "description": "Immutable dispute decision & evidence audit trail"
+    },
+    "/commission_ledger/{entryId}": {
+      "schema": "CommissionLedgerEntry",
+      "description": "Append-only 15% commission ledger per order"
+    },
+    "/commission_remittances/{remittanceId}": {
+      "schema": "CommissionRemittance",
+      "description": "Weekly partner UTR remittance submissions"
+    },
+    "/service_areas/{pincode}": {
+      "schema": "ServiceArea",
+      "description": "Pan-India PIN coverage zones"
+    },
+    "/services/{serviceId}": {
+      "schema": "ServiceCategory",
+      "description": "Scalable garment care service categories"
+    },
+    "/garments/{garmentId}": {
+      "schema": "GarmentCatalogItem",
+      "description": "Dynamic garment pricing catalog"
+    },
+    "/coupons/{code}": {
+      "schema": "Coupon",
+      "description": "Promotional discount codes"
+    },
+    "/reviews/{reviewId}": {
+      "schema": "VerifiedReview",
+      "description": "Verified delivery customer reviews"
+    },
+    "/support_tickets/{ticketId}": {
+      "schema": "SupportTicket",
+      "description": "Customer and partner support desk tickets"
+    },
+    "/bulk_enquiries/{enquiryId}": {
+      "schema": "BulkEnquiry",
+      "description": "Corporate and bulk laundry requests"
+    },
+    "/app_settings/{settingId}": {
+      "schema": "AppSettings",
+      "description": "Business, legal, and platform settings"
+    },
+    "/audit_logs/{logId}": {
+      "schema": "AuditLog",
+      "description": "Security and operational audit logs"
+    }
+  }
+}
