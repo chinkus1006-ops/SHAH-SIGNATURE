@@ -31,11 +31,17 @@ service firebase.storage {
 
     // Order Evidence Photos (pickup, before/after service, delivery)
     // Only authorized customer, assigned partner (verified via Firestore order doc), or Super Admin
-    match /garment_evidence/{folderId}/{fileName} {
-      allow read, write: if isAdmin() || (
+    match /garment_evidence/{orderId}/{fileName} {
+      allow read: if isAdmin() || (
+        isSignedIn() && (
+          firestore.get(/databases/ai-studio-ssignatureluxury-b551d296-e279-41e3-b8af-39c7cbca40d4/documents/orders/$(orderId)).data.customerId == request.auth.uid ||
+          firestore.get(/databases/ai-studio-ssignatureluxury-b551d296-e279-41e3-b8af-39c7cbca40d4/documents/orders/$(orderId)).data.assignedPartnerId == request.auth.uid
+        )
+      );
+      allow write: if isAdmin() || (
         isSignedIn() && isValidImageOrDoc() && (
-          folderId.matches('^' + request.auth.uid + '.*') ||
-          exists(/databases/(default)/documents/orders/$(folderId))
+          firestore.get(/databases/ai-studio-ssignatureluxury-b551d296-e279-41e3-b8af-39c7cbca40d4/documents/orders/$(orderId)).data.customerId == request.auth.uid ||
+          firestore.get(/databases/ai-studio-ssignatureluxury-b551d296-e279-41e3-b8af-39c7cbca40d4/documents/orders/$(orderId)).data.assignedPartnerId == request.auth.uid
         )
       );
     }
@@ -44,14 +50,14 @@ service firebase.storage {
     match /disputes/{orderId}/{fileName} {
       allow read: if isAdmin() || (
         isSignedIn() && (
-          firestore.get(/databases/(default)/documents/orders/$(orderId)).data.customerId == request.auth.uid ||
-          firestore.get(/databases/(default)/documents/orders/$(orderId)).data.assignedPartnerId == request.auth.uid
+          firestore.get(/databases/ai-studio-ssignatureluxury-b551d296-e279-41e3-b8af-39c7cbca40d4/documents/orders/$(orderId)).data.customerId == request.auth.uid ||
+          firestore.get(/databases/ai-studio-ssignatureluxury-b551d296-e279-41e3-b8af-39c7cbca40d4/documents/orders/$(orderId)).data.assignedPartnerId == request.auth.uid
         )
       );
       allow write: if isAdmin() || (
         isSignedIn() && isValidImageOrDoc() && (
-          firestore.get(/databases/(default)/documents/orders/$(orderId)).data.customerId == request.auth.uid ||
-          firestore.get(/databases/(default)/documents/orders/$(orderId)).data.assignedPartnerId == request.auth.uid
+          firestore.get(/databases/ai-studio-ssignatureluxury-b551d296-e279-41e3-b8af-39c7cbca40d4/documents/orders/$(orderId)).data.customerId == request.auth.uid ||
+          firestore.get(/databases/ai-studio-ssignatureluxury-b551d296-e279-41e3-b8af-39c7cbca40d4/documents/orders/$(orderId)).data.assignedPartnerId == request.auth.uid
         )
       );
     }

@@ -47,6 +47,8 @@ export const BookingModal: React.FC = () => {
     t,
     language,
     setRole,
+    authSession,
+    openAuthModal,
   } = useApp();
 
   // 5-Step Pan-India Booking Flow:
@@ -199,6 +201,10 @@ export const BookingModal: React.FC = () => {
 
   const handleConfirmOrder = async () => {
     setBookingError('');
+    if (!authSession?.isAuthenticated || !authSession.token) {
+      setBookingError('Please sign in or register as a Customer before confirming your booking.');
+      return;
+    }
     if (!customerName.trim() || !customerPhone.trim() || !address.trim() || !pincode.trim()) {
       setBookingError('Please complete your name, mobile number, address, and PIN code.');
       return;
@@ -220,7 +226,10 @@ export const BookingModal: React.FC = () => {
 
       const validationRes = await fetch('/api/orders/validate-booking', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${authSession.token}`,
+        },
         body: JSON.stringify({
           customerId: customerUser.id,
           customerPhone: customerPhone.trim(),
@@ -836,6 +845,31 @@ export const BookingModal: React.FC = () => {
               <div className="p-3 bg-rose-50 border border-rose-300 rounded-lg text-rose-800 flex items-center gap-2">
                 <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
                 <span>{bookingError}</span>
+              </div>
+            )}
+
+            {(!authSession?.isAuthenticated || !authSession.token) && (
+              <div className="p-3.5 bg-amber-50 border border-amber-300 rounded-lg text-amber-900 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div className="flex items-center gap-2">
+                  <ShieldCheck className="w-4 h-4 text-amber-700 shrink-0" />
+                  <span>Sign in to your verified Customer account to confirm your order. Your cart stays saved.</span>
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => openAuthModal('customer', 'login')}
+                    className="px-3 py-1.5 bg-[#0B132B] text-[#F3E5AB] font-bold rounded cursor-pointer"
+                  >
+                    Sign In
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => openAuthModal('customer', 'register')}
+                    className="px-3 py-1.5 bg-white border border-amber-400 text-amber-900 font-semibold rounded cursor-pointer"
+                  >
+                    Register
+                  </button>
+                </div>
               </div>
             )}
 

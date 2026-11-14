@@ -64,8 +64,10 @@ import {
 } from '../data/initialData';
 import { translations } from '../translations';
 import { db, auth, persistDocumentSafe, signOutFirebase, testFirestoreConnection } from '../lib/firebaseClient';
-import { collection, onSnapshot } from 'firebase/firestore';
+import { collection, onSnapshot, query, where } from 'firebase/firestore';
 import { onAuthStateChanged } from 'firebase/auth';
+
+const TRUSTED_ADMIN_EMAILS = new Set(['shahsignature@gmail.com', 'chinku.s1006@gmail.com']);
 
 function computeHaversineKm(a?: GeoCoordinates, b?: GeoCoordinates): number {
   if (!a || !b) return 999;
@@ -342,8 +344,18 @@ interface AppContextType {
   setPhoneVerifiedSession: (phone: string, proofToken?: string) => void;
   firebaseUid: string | null;
   loginAdmin: (credentials: { emailOrUsername: string; password?: string; token?: string }) => { success: boolean; message: string };
-  loginCustomer: (credentials: { emailOrCode: string; password?: string }) => { success: boolean; message: string; customer?: CustomerUser };
-  loginPartner: (credentials: { emailOrCode: string; password?: string }) => { success: boolean; message: string; partner?: Partner };
+  loginCustomer: (credentials: { emailOrCode: string; password?: string }) => Promise<{ success: boolean; message: string; customer?: CustomerUser }>;
+  loginPartner: (credentials: { emailOrCode: string; password?: string }) => Promise<{ success: boolean; message: string; partner?: Partner }>;
+  loginWithGoogleFirebase: (
+    portal: 'customer' | 'partner' | 'admin',
+    idToken: string
+  ) => Promise<{
+    success: boolean;
+    needsPartnerRegistration?: boolean;
+    firebaseEmail?: string;
+    firebaseName?: string;
+    message?: string;
+  }>;
   registerCustomerAccount: (data: {
     name: string;
     phone: string;
@@ -354,7 +366,7 @@ interface AppContextType {
     locality?: string;
     pincode?: string;
     referralCodeUsed?: string;
-  }) => { success: boolean; customer: CustomerUser; message: string };
+  }) => Promise<{ success: boolean; customer?: CustomerUser; message: string }>;
   registerPartnerAccount: (data: {
     name: string;
     phone: string;
@@ -368,10 +380,10 @@ interface AppContextType {
     servicesOffered: ServiceType[];
     workingHours?: string;
     password?: string;
-  }) => { success: boolean; partner: Partner; message: string };
-  requestPasswordReset: (email: string, targetRole: AppRole) => { success: boolean; resetToken?: string; message: string };
+  }) => Promise<{ success: boolean; partner?: Partner; message: string }>;
+  requestPasswordReset: (email: string, targetRole: AppRole) => Promise<{ success: boolean; resetToken?: string; message: string }>;
   confirmPasswordReset: (token: string, newPassword: string) => { success: boolean; message: string };
-  changePassword: (role: AppRole, userId: string, oldPass: string, newPass: string) => { success: boolean; message: string };
+  changePassword: (role: AppRole, userId: string, oldPass: string, newPass: string) => Promise<{ success: boolean; message: string }>;
   logout: () => void;
   authSession: AuthSession | null;
 
@@ -431,8 +443,14 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const [language, setLanguageState] = useState<Language>(() => {
     return (localStorage.getItem(LOCAL_STORAGE_KEYS.LANGUAGE) as Language) || 'en';
   });
+  const [authSession, setAuthSession] = useState<AuthSession | null>(() => readStorage('shah_auth_session_v3', null));
   const [role, setRoleState] = useState<UserRole>(() => {
-    return (localStorage.getItem(LOCAL_STORAGE_KEYS.ROLE) as UserRole) || 'customer';
+    const savedSession = readStorage<AuthSession | null>('shah_auth_session_v3', null);
+    if (savedSession?.isAuthenticated && savedSession.token) {
+      if (savedSession.activeRole === 'SUPER_ADMIN') return 'admin';
+      if (savedSession.activeRole === 'SERVICE_PARTNER') return 'partner';
+    }
+    return 'customer';
   });
   const [firebaseUid, setFirebaseUid] = useState<string | null>(null);
   const [phoneProofToken, setPhoneProofToken] = useState<string | null>(() => {
@@ -445,11 +463,36 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   const setRole = (newRole: UserRole) => {
+    if (newRole === 'admin') {
+      if (!authSession?.isAuthenticated || authSession.activeRole !== 'SUPER_ADMIN' || !authSession.token) {
+        addActivityLog(
+          'UNAUTHORIZED_PORTAL_SWITCH',
+          authSession?.activeRole || 'CUSTOMER',
+          authSession?.userName || 'Visitor',
+          'Blocked direct switch to Super Admin without verified session.',
+          'blocked'
+        );
+        openAuthModal('admin', 'login');
+        return;
+      }
+    }
+    if (newRole === 'partner') {
+      if (!authSession?.isAuthenticated || authSession.activeRole !== 'SERVICE_PARTNER' || !authSession.token) {
+        addActivityLog(
+          'UNAUTHORIZED_PORTAL_SWITCH',
+          authSession?.activeRole || 'CUSTOMER',
+          authSession?.userName || 'Visitor',
+          'Blocked direct switch to Partner Hub without verified session.',
+          'blocked'
+        );
+        openAuthModal('partner', 'login');
+        return;
+      }
+    }
     setRoleState(newRole);
     localStorage.setItem(LOCAL_STORAGE_KEYS.ROLE, newRole);
   };
 
-  const [authSession, setAuthSession] = useState<AuthSession | null>(() => readStorage('shah_auth_session_v3', null));
   const t = translations[language];
 
   // Settings & Legal
@@ -457,10 +500,19 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     readStorage(LOCAL_STORAGE_KEYS.BUSINESS, INITIAL_BUSINESS_SETTINGS)
   );
   const updateBusinessSettings = (updates: Partial<BusinessSettings>) => {
+    if (!authSession?.isAuthenticated || authSession.activeRole !== 'SUPER_ADMIN' || !authSession.token) {
+      addActivityLog('UNAUTHORIZED_SETTINGS_WRITE', authSession?.activeRole || 'CUSTOMER', authSession?.userName || 'Visitor', 'Blocked businessSettings update from non-admin.', 'blocked');
+      return;
+    }
     setBusinessSettings(prev => {
       const updated = { ...prev, ...updates };
       localStorage.setItem(LOCAL_STORAGE_KEYS.BUSINESS, JSON.stringify(updated));
       persistDocumentSafe('app_settings', 'business', { id: 'business', ...updated }).catch(() => {});
+      fetch('/api/admin/settings', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authSession.token}` },
+        body: JSON.stringify({ businessSettings: updated }),
+      }).catch(() => {});
       return updated;
     });
   };
@@ -469,32 +521,69 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     readStorage(LOCAL_STORAGE_KEYS.LEGAL, INITIAL_LEGAL_POLICIES)
   );
   const updateLegalPolicies = (updates: Partial<LegalPolicies>) => {
+    if (!authSession?.isAuthenticated || authSession.activeRole !== 'SUPER_ADMIN' || !authSession.token) {
+      addActivityLog('UNAUTHORIZED_LEGAL_WRITE', authSession?.activeRole || 'CUSTOMER', authSession?.userName || 'Visitor', 'Blocked legalPolicies update from non-admin.', 'blocked');
+      return;
+    }
     setLegalPolicies(prev => {
       const updated = { ...prev, ...updates, lastUpdated: new Date().toISOString().split('T')[0] };
       localStorage.setItem(LOCAL_STORAGE_KEYS.LEGAL, JSON.stringify(updated));
       persistDocumentSafe('app_settings', 'legal', { id: 'legal', ...updated }).catch(() => {});
+      fetch('/api/admin/settings', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authSession.token}` },
+        body: JSON.stringify({ legalPolicies: updated }),
+      }).catch(() => {});
       return updated;
     });
   };
 
-  // Customers
+  // Customers (Strict pinning when activeRole === 'CUSTOMER')
   const [customers, setCustomers] = useState<CustomerUser[]>(() =>
     readStorage(LOCAL_STORAGE_KEYS.CUSTOMERS, INITIAL_CUSTOMERS)
   );
   const [activeCustomerId, setActiveCustomerIdState] = useState<string>(() => {
+    const saved = readStorage<AuthSession | null>('shah_auth_session_v3', null);
+    if (saved?.isAuthenticated && saved.activeRole === 'CUSTOMER' && saved.userId) {
+      return saved.userId;
+    }
     return localStorage.getItem(LOCAL_STORAGE_KEYS.ACTIVE_CUSTOMER) || INITIAL_CUSTOMERS[0].id;
   });
   const setActiveCustomerId = (id: string) => {
+    if (authSession?.isAuthenticated && authSession.activeRole === 'CUSTOMER' && authSession.userId !== id) {
+      return;
+    }
     setActiveCustomerIdState(id);
     localStorage.setItem(LOCAL_STORAGE_KEYS.ACTIVE_CUSTOMER, id);
   };
-  const customerUser = customers.find(c => c.id === activeCustomerId) || customers[0];
+  const effectiveCustomerId =
+    authSession?.isAuthenticated && authSession.activeRole === 'CUSTOMER' ? authSession.userId : activeCustomerId;
+  const customerUser = customers.find(c => c.id === effectiveCustomerId) || customers[0];
 
   const updateCustomerUser = (updates: Partial<CustomerUser>) => {
-    setCustomers(prev => prev.map(c => (c.id === customerUser.id ? { ...c, ...updates } : c)));
+    if (!authSession?.isAuthenticated || !authSession.token) return;
+    if (authSession.activeRole !== 'SUPER_ADMIN' && authSession.userId !== customerUser.id) return;
+    const safeUpdates = { ...updates };
+    if (authSession.activeRole !== 'SUPER_ADMIN') {
+      delete (safeUpdates as any).isSuspended;
+      delete (safeUpdates as any).rewardPoints;
+      delete (safeUpdates as any).totalOrders;
+      delete (safeUpdates as any).totalSpent;
+      delete (safeUpdates as any).customerCode;
+    }
+    setCustomers(prev => prev.map(c => (c.id === customerUser.id ? { ...c, ...safeUpdates } : c)));
+    fetch(`/api/customers/${encodeURIComponent(customerUser.id)}`, {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${authSession.token}`,
+      },
+      body: JSON.stringify(safeUpdates),
+    }).catch(() => {});
   };
 
   const addCustomerAddress = (newAddr: Omit<CustomerAddress, 'id'>) => {
+    if (!authSession?.isAuthenticated || authSession.activeRole !== 'CUSTOMER') return;
     const address: CustomerAddress = { ...newAddr, id: `addr_${Date.now()}` };
     updateCustomerUser({
       addresses: [...customerUser.addresses.map(a => (newAddr.isDefault ? { ...a, isDefault: false } : a)), address],
@@ -502,6 +591,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   const updateCustomerAddress = (addressId: string, updates: Partial<CustomerAddress>) => {
+    if (!authSession?.isAuthenticated || authSession.activeRole !== 'CUSTOMER') return;
     updateCustomerUser({
       addresses: customerUser.addresses.map(a => {
         if (a.id === addressId) return { ...a, ...updates };
@@ -512,19 +602,32 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   const deleteCustomerAddress = (addressId: string) => {
+    if (!authSession?.isAuthenticated || authSession.activeRole !== 'CUSTOMER') return;
     updateCustomerUser({
       addresses: customerUser.addresses.filter(a => a.id !== addressId),
     });
   };
 
   const setDefaultAddress = (addressId: string) => {
+    if (!authSession?.isAuthenticated || authSession.activeRole !== 'CUSTOMER') return;
     updateCustomerUser({
       addresses: customerUser.addresses.map(a => ({ ...a, isDefault: a.id === addressId })),
     });
   };
 
   const toggleCustomerSuspension = (customerId: string) => {
-    setCustomers(prev => prev.map(c => (c.id === customerId ? { ...c, isSuspended: !c.isSuspended } : c)));
+    if (!authSession?.isAuthenticated || authSession.activeRole !== 'SUPER_ADMIN' || !authSession.token) {
+      addActivityLog('UNAUTHORIZED_SUSPEND_ATTEMPT', authSession?.activeRole || 'CUSTOMER', authSession?.userName || 'Visitor', 'Blocked customer suspension outside Admin.', 'blocked');
+      return;
+    }
+    const target = customers.find(c => c.id === customerId);
+    const nextVal = !target?.isSuspended;
+    setCustomers(prev => prev.map(c => (c.id === customerId ? { ...c, isSuspended: nextVal } : c)));
+    fetch(`/api/customers/${encodeURIComponent(customerId)}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authSession.token}` },
+      body: JSON.stringify({ isSuspended: nextVal }),
+    }).catch(() => {});
   };
 
   const registerCustomer = (data: {
@@ -569,24 +672,60 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     return newCustomer;
   };
 
-  // Partners
+  // Partners (Strict pinning when activeRole === 'SERVICE_PARTNER')
   const [partners, setPartners] = useState<Partner[]>(() =>
     readStorage(LOCAL_STORAGE_KEYS.PARTNERS, INITIAL_PARTNERS)
   );
   const [activePartnerId, setActivePartnerIdState] = useState<string>(() => {
+    const saved = readStorage<AuthSession | null>('shah_auth_session_v3', null);
+    if (saved?.isAuthenticated && saved.activeRole === 'SERVICE_PARTNER' && saved.userId) {
+      return saved.userId;
+    }
     return localStorage.getItem(LOCAL_STORAGE_KEYS.ACTIVE_PARTNER) || INITIAL_PARTNERS[0].id;
   });
   const setActivePartnerId = (id: string) => {
+    // Only Super Admin can switch which partner profile is inspected; Service Partners are pinned to authSession.userId
+    if (!authSession?.isAuthenticated || authSession.activeRole !== 'SUPER_ADMIN') {
+      return;
+    }
     setActivePartnerIdState(id);
     localStorage.setItem(LOCAL_STORAGE_KEYS.ACTIVE_PARTNER, id);
   };
-  const activePartner = partners.find(p => p.id === activePartnerId) || partners[0];
+  const effectivePartnerId =
+    authSession?.isAuthenticated && authSession.activeRole === 'SERVICE_PARTNER' ? authSession.userId : activePartnerId;
+  const activePartner = partners.find(p => p.id === effectivePartnerId) || partners[0];
 
   const updatePartnerProfile = (partnerId: string, updates: Partial<Partner>) => {
-    setPartners(prev => prev.map(p => (p.id === partnerId ? { ...p, ...updates } : p)));
+    if (!authSession?.isAuthenticated || !authSession.token) return;
+    if (authSession.activeRole !== 'SUPER_ADMIN' && authSession.userId !== partnerId) {
+      addActivityLog('CROSS_PARTNER_EDIT_BLOCKED', authSession.activeRole, authSession.userId || 'partner', `Blocked update to partner ${partnerId}`, 'blocked');
+      return;
+    }
+    const safeUpdates = { ...updates };
+    if (authSession.activeRole !== 'SUPER_ADMIN') {
+      delete safeUpdates.status;
+      delete safeUpdates.kycVerified;
+      delete safeUpdates.commissionBlocked;
+      delete safeUpdates.customCommissionPercent;
+      delete safeUpdates.walletBalance;
+      delete safeUpdates.totalEarnings;
+      delete safeUpdates.commissionPaid;
+      delete safeUpdates.commissionPending;
+      delete safeUpdates.commissionOverdue;
+    }
+    setPartners(prev => prev.map(p => (p.id === partnerId ? { ...p, ...safeUpdates } : p)));
+    fetch(`/api/partners/${encodeURIComponent(partnerId)}/profile`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authSession.token}` },
+      body: JSON.stringify(safeUpdates),
+    }).catch(() => {});
   };
 
   const togglePartnerStatus = (partnerId: string, status: 'active' | 'pending' | 'suspended') => {
+    if (!authSession?.isAuthenticated || authSession.activeRole !== 'SUPER_ADMIN' || !authSession.token) {
+      addActivityLog('UNAUTHORIZED_PARTNER_APPROVAL', authSession?.activeRole || 'CUSTOMER', authSession?.userName || 'Visitor', `Blocked partner ${partnerId} approval escalation.`, 'blocked');
+      return;
+    }
     setPartners(prev =>
       prev.map(p =>
         p.id === partnerId
@@ -594,10 +733,16 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
               ...p,
               status,
               kycVerified: status === 'active' ? true : p.kycVerified,
+              isOnline: status === 'active' ? p.isOnline : false,
             }
           : p
       )
     );
+    fetch(`/api/partners/${encodeURIComponent(partnerId)}/approval`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authSession.token}` },
+      body: JSON.stringify({ status }),
+    }).catch(() => {});
     addActivityLog(
       'PARTNER_STATUS_CHANGED',
       'SUPER_ADMIN',
@@ -608,11 +753,32 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   const togglePartnerOnline = (partnerId: string) => {
-    setPartners(prev => prev.map(p => (p.id === partnerId ? { ...p, isOnline: !p.isOnline } : p)));
+    if (!authSession?.isAuthenticated || !authSession.token) return;
+    if (authSession.activeRole !== 'SUPER_ADMIN' && authSession.userId !== partnerId) return;
+    const target = partners.find(p => p.id === partnerId);
+    if (!target || target.status !== 'active' || target.kycVerified === false || target.commissionBlocked) {
+      return;
+    }
+    const nextOnline = !target.isOnline;
+    setPartners(prev => prev.map(p => (p.id === partnerId ? { ...p, isOnline: nextOnline } : p)));
+    fetch(`/api/partners/${encodeURIComponent(partnerId)}/profile`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authSession.token}` },
+      body: JSON.stringify({ isOnline: nextOnline }),
+    }).catch(() => {});
   };
 
   const togglePartnerCommissionBlock = (partnerId: string, blocked: boolean) => {
+    if (!authSession?.isAuthenticated || authSession.activeRole !== 'SUPER_ADMIN' || !authSession.token) {
+      addActivityLog('UNAUTHORIZED_COMMISSION_GATE', authSession?.activeRole || 'CUSTOMER', authSession?.userName || 'Visitor', `Blocked non-admin commission gate edit on ${partnerId}.`, 'blocked');
+      return;
+    }
     setPartners(prev => prev.map(p => (p.id === partnerId ? { ...p, commissionBlocked: blocked } : p)));
+    fetch(`/api/partners/${encodeURIComponent(partnerId)}/approval`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authSession.token}` },
+      body: JSON.stringify({ commissionBlocked: blocked }),
+    }).catch(() => {});
     addActivityLog(
       'PARTNER_COMMISSION_GATE',
       'SUPER_ADMIN',
@@ -909,16 +1075,108 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   useEffect(() => { localStorage.setItem(LOCAL_STORAGE_KEYS.FAQS, JSON.stringify(faqs)); }, [faqs]);
   useEffect(() => { localStorage.setItem(LOCAL_STORAGE_KEYS.NOTIFICATIONS, JSON.stringify(notifications)); }, [notifications]);
 
-  // Sync dynamic config & active orders to Express backend for authoritative API checks
+  // Sync dynamic config & active orders ONLY when authenticated as verified SUPER_ADMIN
   useEffect(() => {
+    if (!authSession?.isAuthenticated || authSession.activeRole !== 'SUPER_ADMIN' || !authSession.token) {
+      return;
+    }
     fetch('/api/marketplace/sync-config', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${authSession.token}`,
+      },
       body: JSON.stringify({ garments, serviceAreas, partners, settings, coupons, orders }),
     }).catch(() => {});
-  }, [garments, serviceAreas, partners, settings, coupons, orders]);
+  }, [authSession, garments, serviceAreas, partners, settings, coupons, orders]);
 
-  // Firebase Auth state tracking, boot connection check & Firestore listener
+  // Verify stored session token with Express server on boot & hydrate strictly role-scoped records
+  useEffect(() => {
+    fetch('/api/marketplace/public')
+      .then(r => (r.ok ? r.json() : null))
+      .then(pub => {
+        if (!pub?.success) return;
+        if (Array.isArray(pub.serviceCategories)) setServiceCategories(pub.serviceCategories);
+        if (Array.isArray(pub.garments)) setGarments(pub.garments);
+        if (Array.isArray(pub.serviceAreas)) setServiceAreas(pub.serviceAreas);
+        if (Array.isArray(pub.coupons)) setCoupons(pub.coupons);
+      })
+      .catch(() => {});
+
+    if (!authSession?.token) {
+      if (role !== 'customer') {
+        setRoleState('customer');
+        localStorage.setItem(LOCAL_STORAGE_KEYS.ROLE, 'customer');
+      }
+      return;
+    }
+
+    let cancelled = false;
+    fetch('/api/auth/me', {
+      headers: { Authorization: `Bearer ${authSession.token}` },
+    })
+      .then(async res => {
+        if (!res.ok) {
+          throw new Error('Session expired or invalid');
+        }
+        return res.json();
+      })
+      .then(data => {
+        if (cancelled || !data?.success) return;
+        if (data.role === 'SUPER_ADMIN') {
+          setRoleState('admin');
+          fetch('/api/admin/overview', { headers: { Authorization: `Bearer ${authSession.token}` } })
+            .then(r => (r.ok ? r.json() : null))
+            .then(ov => {
+              if (!ov?.success) return;
+              if (Array.isArray(ov.customers)) setCustomers(ov.customers);
+              if (Array.isArray(ov.partners)) setPartners(ov.partners);
+              if (Array.isArray(ov.orders)) setOrders(ov.orders);
+            })
+            .catch(() => {});
+        } else if (data.role === 'SERVICE_PARTNER' && data.partner) {
+          setActivePartnerIdState(data.partner.id);
+          localStorage.setItem(LOCAL_STORAGE_KEYS.ACTIVE_PARTNER, data.partner.id);
+          setPartners(prev => {
+            const exists = prev.some(p => p.id === data.partner.id);
+            return exists ? prev.map(p => (p.id === data.partner.id ? data.partner : p)) : [...prev, data.partner];
+          });
+        } else if (data.role === 'CUSTOMER' && data.customer) {
+          setActiveCustomerIdState(data.customer.id);
+          localStorage.setItem(LOCAL_STORAGE_KEYS.ACTIVE_CUSTOMER, data.customer.id);
+          setCustomers(prev => {
+            const exists = prev.some(c => c.id === data.customer.id);
+            return exists ? prev.map(c => (c.id === data.customer.id ? data.customer : c)) : [data.customer, ...prev];
+          });
+        }
+
+        // Load strictly role-scoped orders & disputes from server
+        fetch('/api/orders', { headers: { Authorization: `Bearer ${authSession.token}` } })
+          .then(r => (r.ok ? r.json() : null))
+          .then(ordRes => {
+            if (!ordRes?.success || !Array.isArray(ordRes.orders)) return;
+            setOrders(prev => {
+              const map = new window.Map(prev.map(o => [o.id, o]));
+              ordRes.orders.forEach((ro: Order) => map.set(ro.id, ro));
+              return Array.from(map.values());
+            });
+          })
+          .catch(() => {});
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setAuthSession(null);
+        localStorage.removeItem('shah_auth_session_v3');
+        setRoleState('customer');
+        localStorage.setItem(LOCAL_STORAGE_KEYS.ROLE, 'customer');
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [authSession?.token]);
+
+  // Firebase Auth state tracking, boot connection check & role-scoped Firestore listener
   useEffect(() => {
     testFirestoreConnection().catch(() => {});
     let unsubscribeSnapshot: (() => void) | undefined;
@@ -932,9 +1190,14 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
       if (user) {
         try {
-          const ordersCol = collection(db, 'orders');
+          const emailLower = (user.email || '').toLowerCase();
+          const isOwnerAdmin = user.emailVerified && TRUSTED_ADMIN_EMAILS.has(emailLower);
+          const ordersQuery = isOwnerAdmin
+            ? collection(db, 'orders')
+            : query(collection(db, 'orders'), where('customerId', '==', user.uid));
+
           unsubscribeSnapshot = onSnapshot(
-            ordersCol,
+            ordersQuery,
             snapshot => {
               if (!snapshot.empty) {
                 const remoteOrders: Order[] = [];
@@ -1018,9 +1281,19 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
   const cartSubtotal = cart.reduce((sum, item) => sum + item.item.price * item.quantity, 0);
 
-  // Strict customer/partner isolation
-  const customerOrders = orders.filter(o => o.customerId === customerUser.id);
-  const partnerOrders = orders.filter(o => o.assignedPartnerId === activePartner.id);
+  // Strict customer/partner isolation tied directly to verified session identity
+  const customerOrders =
+    authSession?.isAuthenticated && authSession.activeRole === 'CUSTOMER'
+      ? orders.filter(o => o.customerId === authSession.userId)
+      : authSession?.activeRole === 'SUPER_ADMIN'
+      ? orders.filter(o => o.customerId === customerUser.id)
+      : [];
+  const partnerOrders =
+    authSession?.isAuthenticated && authSession.activeRole === 'SERVICE_PARTNER'
+      ? orders.filter(o => o.assignedPartnerId === authSession.userId)
+      : authSession?.activeRole === 'SUPER_ADMIN'
+      ? orders.filter(o => o.assignedPartnerId === activePartner.id)
+      : [];
 
   // Admin & Logs
   const [adminUser] = useState<AdminUser>(INITIAL_ADMIN);
@@ -1055,6 +1328,51 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const createOrder = async (
     orderData: Omit<Order, 'id' | 'orderNumber' | 'createdAt' | 'logs' | 'status'>
   ): Promise<Order> => {
+    if (!authSession?.isAuthenticated || !authSession.token) {
+      throw new Error('Authentication required before creating a booking.');
+    }
+
+    const authoritativeCustomerId =
+      authSession.activeRole === 'SUPER_ADMIN' ? orderData.customerId : authSession.userId || customerUser.id;
+
+    // Persist on Express backend (server computes prices & 15% commission authoritatively)
+    try {
+      const apiRes = await fetch('/api/orders/create', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${authSession.token}`,
+        },
+        body: JSON.stringify({
+          ...orderData,
+          customerId: authoritativeCustomerId,
+        }),
+      });
+      const apiJson = await apiRes.json();
+      if (apiRes.ok && apiJson?.success && apiJson.order) {
+        const srvOrder: Order = apiJson.order;
+        setOrders(prev => [srvOrder, ...prev]);
+        setActiveTrackingOrderId(srvOrder.id);
+        clearCart();
+        persistDocumentSafe('orders', srvOrder.id, srvOrder, 'set').catch(() => {});
+        addActivityLog(
+          'ORDER_BOOKED_SMART_DISPATCH',
+          'CUSTOMER',
+          srvOrder.customerName,
+          `Order ${srvOrder.orderNumber} created (server-verified ₹${srvOrder.totalAmount}).`,
+          'success'
+        );
+        return srvOrder;
+      }
+      if (!apiRes.ok) {
+        throw new Error(apiJson?.message || 'Booking creation rejected by server.');
+      }
+    } catch (err) {
+      if (err instanceof Error && err.message) {
+        throw err;
+      }
+    }
+
     const randomSuffix = Math.floor(1000 + Math.random() * 9000);
     const pinPrefix = (orderData.pincode || '110086').slice(-2);
     const orderNumber = `SS-${pinPrefix}-${randomSuffix}`;
@@ -1079,6 +1397,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
     const newOrder: Order = {
       ...orderData,
+      customerId: authoritativeCustomerId,
       id,
       orderNumber,
       status: 'BOOKED',
@@ -1126,10 +1445,9 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     setActiveTrackingOrderId(newOrder.id);
     clearCart();
 
-    // Update customer order count & deduct redeemed reward points if used
     setCustomers(prev =>
       prev.map(c => {
-        if (c.id !== orderData.customerId) return c;
+        if (c.id !== authoritativeCustomerId) return c;
         const remainingPts = Math.max(0, (c.rewardPoints || 0) - (orderData.rewardPointsUsed || 0));
         return {
           ...c,
@@ -1205,6 +1523,14 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   const acceptOrder = (orderId: string, partnerId: string): { success: boolean; message: string } => {
+    if (!authSession?.isAuthenticated || !authSession.token) {
+      return { success: false, message: 'Partner authentication required.' };
+    }
+    if (authSession.activeRole !== 'SUPER_ADMIN' && (authSession.activeRole !== 'SERVICE_PARTNER' || authSession.userId !== partnerId)) {
+      addActivityLog('UNAUTHORIZED_ORDER_ACCEPT', authSession.activeRole, authSession.userId || 'partner', `Blocked partner claim attempt as ${partnerId}`, 'blocked');
+      return { success: false, message: 'Forbidden: you can only accept orders for your own verified partner account.' };
+    }
+
     const targetOrder = orders.find(o => o.id === orderId);
     if (!targetOrder) return { success: false, message: 'Order not found.' };
 
@@ -1233,10 +1559,13 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       return { success: false, message: `Daily capacity limit reached (${activeLoad}/${cap} active orders).` };
     }
 
-    // Fire server-side atomic lock check asynchronously for cross-client audit
+    // Fire server-side atomic lock check with authenticated Bearer token
     fetch('/api/orders/accept-atomic', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${authSession.token}`,
+      },
       body: JSON.stringify({ orderId, partnerId, partnerName: partner.name }),
     }).catch(() => {});
 
@@ -1503,12 +1832,28 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       })
     );
 
+    if (authSession?.token) {
+      fetch(`/api/orders/${encodeURIComponent(orderId)}/status`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${authSession.token}`,
+        },
+        body: JSON.stringify({ nextStatus: canonicalNew, reason }),
+      }).catch(() => {});
+    }
     persistDocumentSafe('orders', orderId, { status: canonicalNew, updatedAt: nowIso }, 'update').catch(() => {});
   };
 
   const customerCancelOrder = (orderId: string, reason: string): { success: boolean; message: string } => {
+    if (!authSession?.isAuthenticated || !authSession.token) {
+      return { success: false, message: 'Sign in required.' };
+    }
     const order = orders.find(o => o.id === orderId);
     if (!order) return { success: false, message: 'Order not found.' };
+    if (authSession.activeRole !== 'SUPER_ADMIN' && order.customerId !== authSession.userId) {
+      return { success: false, message: 'Forbidden: you can only cancel your own orders.' };
+    }
     const canonical = normalizeOrderStatus(order.status);
     if (!['BOOKED', 'PARTNER_ASSIGNED', 'PICKUP_SCHEDULED'].includes(canonical)) {
       return {
@@ -1522,6 +1867,10 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   const adminAssignOrder = (orderId: string, partnerId: string) => {
+    if (!authSession?.isAuthenticated || authSession.activeRole !== 'SUPER_ADMIN' || !authSession.token) {
+      addActivityLog('UNAUTHORIZED_ADMIN_ASSIGN', authSession?.activeRole || 'CUSTOMER', authSession?.userName || 'Visitor', 'Blocked order assignment from non-admin.', 'blocked');
+      return;
+    }
     const partner = partners.find(p => p.id === partnerId);
     const order = orders.find(o => o.id === orderId);
     if (!partner || !order) return;
@@ -1559,11 +1908,21 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       })
     );
 
+    fetch('/api/orders/accept-atomic', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authSession.token}` },
+      body: JSON.stringify({ orderId, partnerId: partner.id, partnerName: partner.name }),
+    }).catch(() => {});
+
     ensureLedgerEntryForOrder(order, partner);
     addActivityLog('ADMIN_ASSIGNED_ORDER', 'SUPER_ADMIN', adminUser.name, `Assigned ${order.orderNumber} to ${partner.name}.`, 'success');
   };
 
   const adminCancelOrder = (orderId: string, reason: string) => {
+    if (!authSession?.isAuthenticated || authSession.activeRole !== 'SUPER_ADMIN' || !authSession.token) {
+      addActivityLog('UNAUTHORIZED_ADMIN_CANCEL', authSession?.activeRole || 'CUSTOMER', authSession?.userName || 'Visitor', 'Blocked admin cancel from non-admin.', 'blocked');
+      return;
+    }
     updateOrderStatus(orderId, 'CANCELLED', undefined, reason);
     addActivityLog('ADMIN_CANCELLED_ORDER', 'SUPER_ADMIN', adminUser.name, `Cancelled ${orderId}: ${reason}`, 'warning');
   };
@@ -1733,6 +2092,14 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       )
     );
 
+    if (authSession?.token) {
+      fetch('/api/remittances', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authSession.token}` },
+        body: JSON.stringify(data),
+      }).catch(() => {});
+    }
+
     addNotification({
       recipientRole: 'admin',
       title: `Commission UTR Submitted: ${remittance.partnerName}`,
@@ -1749,6 +2116,10 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   const verifyPartnerRemittance = (remittanceId: string, decision: 'verified' | 'rejected', adminNotes?: string) => {
+    if (!authSession?.isAuthenticated || authSession.activeRole !== 'SUPER_ADMIN' || !authSession.token) {
+      addActivityLog('UNAUTHORIZED_COMMISSION_VERIFY', authSession?.activeRole || 'CUSTOMER', authSession?.userName || 'Visitor', 'Blocked UTR verification from non-admin.', 'blocked');
+      return;
+    }
     const target = remittances.find(r => r.id === remittanceId);
     if (!target) return;
     const nowIso = new Date().toISOString();
@@ -1760,6 +2131,12 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           : r
       )
     );
+
+    fetch(`/api/remittances/${encodeURIComponent(remittanceId)}/verify`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authSession.token}` },
+      body: JSON.stringify({ decision, adminNotes }),
+    }).catch(() => {});
 
     setCommissionLedger(prev =>
       prev.map(entry => {
@@ -1859,7 +2236,10 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
     fetch('/api/disputes', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        ...(authSession?.token ? { Authorization: `Bearer ${authSession.token}` } : {}),
+      },
       body: JSON.stringify(dispute),
     }).catch(() => {});
 
@@ -1971,7 +2351,10 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
     fetch(`/api/disputes/${disputeId}/partner-response`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        ...(authSession?.token ? { Authorization: `Bearer ${authSession.token}` } : {}),
+      },
       body: JSON.stringify({
         partnerId: target.partnerId,
         partnerResponse: payload.partnerResponse,
@@ -2040,7 +2423,10 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
     fetch(`/api/disputes/${disputeId}/customer-followup`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        ...(authSession?.token ? { Authorization: `Bearer ${authSession.token}` } : {}),
+      },
       body: JSON.stringify({
         customerId: target.customerId,
         followUpNote: payload.followUpNote,
@@ -2283,7 +2669,10 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
     fetch(`/api/disputes/${disputeId}/appeal`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        ...(authSession?.token ? { Authorization: `Bearer ${authSession.token}` } : {}),
+      },
       body: JSON.stringify({
         actorRole: submittedBy === 'partner' ? 'SERVICE_PARTNER' : 'CUSTOMER',
         actorId: submittedBy === 'partner' ? target.partnerId : target.customerId,
@@ -2488,11 +2877,11 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const loginAdmin = (credentials: { emailOrUsername: string; password?: string; token?: string }) => {
     const ident = credentials.emailOrUsername.trim().toLowerCase();
     if (
-      ident === adminUser.email.toLowerCase() ||
-      ident === adminUser.username.toLowerCase() ||
-      ident === 'chinku.s1006@gmail.com'
+      credentials.token &&
+      (ident === adminUser.email.toLowerCase() ||
+        ident === adminUser.username.toLowerCase() ||
+        TRUSTED_ADMIN_EMAILS.has(ident))
     ) {
-      setRole('admin');
       const session: AuthSession = {
         isAuthenticated: true,
         activeRole: 'SUPER_ADMIN',
@@ -2504,85 +2893,198 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       };
       setAuthSession(session);
       localStorage.setItem('shah_auth_session_v3', JSON.stringify(session));
-      addActivityLog('SUPER_ADMIN_LOGIN', 'SUPER_ADMIN', 'Ronak', 'Super Admin authenticated.', 'success');
+      setRoleState('admin');
+      localStorage.setItem(LOCAL_STORAGE_KEYS.ROLE, 'admin');
+      addActivityLog('SUPER_ADMIN_LOGIN', 'SUPER_ADMIN', 'Ronak', 'Super Admin authenticated with server token.', 'success');
       return { success: true, message: 'Super Admin access granted to Ronak.' };
     }
     addActivityLog('FAILED_ADMIN_LOGIN', 'SYSTEM', 'Unauthorized', `Failed admin attempt: ${credentials.emailOrUsername}`, 'blocked');
-    return { success: false, message: 'Invalid credentials. Reserved exclusively for Super Admin.' };
+    return { success: false, message: 'Invalid credentials or missing server verification token.' };
   };
 
-  const loginCustomer = (credentials: { emailOrCode: string; password?: string }) => {
-    const ident = credentials.emailOrCode.trim().toLowerCase();
-    const cleanDigits = ident.replace(/\D/g, '');
-    const found = customers.find(
-      c =>
-        c.email?.toLowerCase() === ident ||
-        c.customerCode?.toLowerCase() === ident ||
-        c.username?.toLowerCase() === ident ||
-        (cleanDigits.length >= 10 && c.phone.replace(/\D/g, '').endsWith(cleanDigits))
-    );
-
-    if (found) {
-      if (found.isSuspended) {
-        addActivityLog('SUSPENDED_CUSTOMER_LOGIN_BLOCKED', 'CUSTOMER', found.name, 'Suspended customer login blocked.', 'blocked');
-        return { success: false, message: 'Account suspended. Contact SHAH SIGNATURE concierge.' };
+  const loginCustomer = async (credentials: { emailOrCode: string; password?: string }) => {
+    try {
+      const res = await fetch('/api/auth/customer-login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          emailOrCode: credentials.emailOrCode,
+          password: credentials.password || '',
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data?.success || !data.customer || !data.token) {
+        addActivityLog('CUSTOMER_LOGIN_FAILED', 'CUSTOMER', credentials.emailOrCode, data?.message || 'Invalid credentials.', 'blocked');
+        return { success: false, message: data?.message || 'Invalid customer credentials.' };
       }
-      setActiveCustomerId(found.id);
-      setRole('customer');
+
+      const authedCustomer: CustomerUser = data.customer;
+      setCustomers(prev => {
+        const exists = prev.some(c => c.id === authedCustomer.id);
+        return exists ? prev.map(c => (c.id === authedCustomer.id ? authedCustomer : c)) : [authedCustomer, ...prev];
+      });
+      setActiveCustomerIdState(authedCustomer.id);
+      localStorage.setItem(LOCAL_STORAGE_KEYS.ACTIVE_CUSTOMER, authedCustomer.id);
+      setRoleState('customer');
+      localStorage.setItem(LOCAL_STORAGE_KEYS.ROLE, 'customer');
+
       const session: AuthSession = {
         isAuthenticated: true,
         activeRole: 'CUSTOMER',
-        userId: found.id,
-        userName: found.name,
-        userEmail: found.email,
-        userPhone: found.phone,
-        phoneVerified: found.phoneVerified,
+        userId: authedCustomer.id,
+        userName: authedCustomer.name,
+        userEmail: authedCustomer.email,
+        userPhone: authedCustomer.phone,
+        phoneVerified: authedCustomer.phoneVerified,
+        token: data.token,
         expiresAt: new Date(Date.now() + 24 * 3600 * 1000).toISOString(),
       };
       setAuthSession(session);
       localStorage.setItem('shah_auth_session_v3', JSON.stringify(session));
-      addActivityLog('CUSTOMER_LOGIN_SUCCESS', 'CUSTOMER', found.name, `Customer ${found.customerCode || found.id} authenticated.`, 'success');
-      return { success: true, customer: found, message: `Welcome back, ${found.name}!` };
+      addActivityLog('CUSTOMER_LOGIN_SUCCESS', 'CUSTOMER', authedCustomer.name, `Customer ${authedCustomer.customerCode || authedCustomer.id} verified via server scrypt auth.`, 'success');
+      return { success: true, customer: authedCustomer, message: data.message || `Welcome back, ${authedCustomer.name}!` };
+    } catch {
+      return { success: false, message: 'Unable to reach customer authentication server.' };
     }
-    return { success: false, message: 'No registered customer found. Please register or verify mobile OTP.' };
   };
 
-  const loginPartner = (credentials: { emailOrCode: string; password?: string }) => {
-    const ident = credentials.emailOrCode.trim().toLowerCase();
-    const cleanDigits = ident.replace(/\D/g, '');
-    const found = partners.find(
-      p =>
-        p.email?.toLowerCase() === ident ||
-        p.partnerCode?.toLowerCase() === ident ||
-        p.username?.toLowerCase() === ident ||
-        (cleanDigits.length >= 10 && p.phone.replace(/\D/g, '').endsWith(cleanDigits))
-    );
-
-    if (found) {
-      if (found.status === 'suspended') {
-        addActivityLog('SUSPENDED_PARTNER_LOGIN_BLOCKED', 'SERVICE_PARTNER', found.name, 'Suspended partner login blocked.', 'blocked');
-        return { success: false, message: 'Partner account suspended. Contact Administration.' };
+  const loginPartner = async (credentials: { emailOrCode: string; password?: string }) => {
+    try {
+      const res = await fetch('/api/auth/partner-login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          emailOrCode: credentials.emailOrCode,
+          password: credentials.password || '',
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data?.success || !data.partner || !data.token) {
+        addActivityLog('PARTNER_LOGIN_FAILED', 'SERVICE_PARTNER', credentials.emailOrCode, data?.message || 'Invalid partner credentials.', 'blocked');
+        return { success: false, message: data?.message || 'Invalid partner credentials.' };
       }
-      setActivePartnerId(found.id);
-      setRole('partner');
+
+      const authedPartner: Partner = data.partner;
+      setPartners(prev => {
+        const exists = prev.some(p => p.id === authedPartner.id);
+        return exists ? prev.map(p => (p.id === authedPartner.id ? authedPartner : p)) : [...prev, authedPartner];
+      });
+      setActivePartnerIdState(authedPartner.id);
+      localStorage.setItem(LOCAL_STORAGE_KEYS.ACTIVE_PARTNER, authedPartner.id);
+
       const session: AuthSession = {
         isAuthenticated: true,
         activeRole: 'SERVICE_PARTNER',
-        userId: found.id,
-        userName: found.name,
-        userEmail: found.email,
-        userPhone: found.phone,
+        userId: authedPartner.id,
+        userName: authedPartner.name,
+        userEmail: authedPartner.email,
+        userPhone: authedPartner.phone,
+        token: data.token,
         expiresAt: new Date(Date.now() + 24 * 3600 * 1000).toISOString(),
       };
       setAuthSession(session);
       localStorage.setItem('shah_auth_session_v3', JSON.stringify(session));
-      addActivityLog('PARTNER_LOGIN_SUCCESS', 'SERVICE_PARTNER', found.name, `Partner ${found.partnerCode} signed in.`, 'success');
-      return { success: true, partner: found, message: `Welcome back, ${found.name}!` };
+      setRoleState('partner');
+      localStorage.setItem(LOCAL_STORAGE_KEYS.ROLE, 'partner');
+      addActivityLog('PARTNER_LOGIN_SUCCESS', 'SERVICE_PARTNER', authedPartner.name, `Partner ${authedPartner.partnerCode} authenticated.`, 'success');
+      return { success: true, partner: authedPartner, message: data.message || `Welcome back, ${authedPartner.name}!` };
+    } catch {
+      return { success: false, message: 'Unable to reach partner authentication server.' };
     }
-    return { success: false, message: 'No partner account found. Please submit a Partner Application.' };
   };
 
-  const registerCustomerAccount = (data: {
+  const loginWithGoogleFirebase = async (portal: 'customer' | 'partner' | 'admin', idToken: string) => {
+    try {
+      const res = await fetch('/api/auth/firebase-session', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ portal, idToken }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data?.success) {
+        return { success: false, message: data?.message || 'Firebase Google authentication was denied.' };
+      }
+      if (data.needsPartnerRegistration) {
+        return {
+          success: true,
+          needsPartnerRegistration: true,
+          firebaseEmail: data.firebaseEmail,
+          firebaseName: data.firebaseName,
+          message: data.message,
+        };
+      }
+      if (data.role === 'SUPER_ADMIN' && data.token) {
+        const session: AuthSession = {
+          isAuthenticated: true,
+          activeRole: 'SUPER_ADMIN',
+          userId: adminUser.id,
+          userName: data.userName || adminUser.name,
+          userEmail: adminUser.email,
+          token: data.token,
+          expiresAt: new Date(Date.now() + 24 * 3600 * 1000).toISOString(),
+        };
+        setAuthSession(session);
+        localStorage.setItem('shah_auth_session_v3', JSON.stringify(session));
+        setRoleState('admin');
+        localStorage.setItem(LOCAL_STORAGE_KEYS.ROLE, 'admin');
+        return { success: true, message: 'Super Admin Google verification succeeded.' };
+      }
+      if (data.role === 'SERVICE_PARTNER' && data.partner && data.token) {
+        const p: Partner = data.partner;
+        setPartners(prev => {
+          const exists = prev.some(x => x.id === p.id);
+          return exists ? prev.map(x => (x.id === p.id ? p : x)) : [...prev, p];
+        });
+        setActivePartnerIdState(p.id);
+        localStorage.setItem(LOCAL_STORAGE_KEYS.ACTIVE_PARTNER, p.id);
+        const session: AuthSession = {
+          isAuthenticated: true,
+          activeRole: 'SERVICE_PARTNER',
+          userId: p.id,
+          userName: p.name,
+          userEmail: p.email,
+          userPhone: p.phone,
+          token: data.token,
+          expiresAt: new Date(Date.now() + 24 * 3600 * 1000).toISOString(),
+        };
+        setAuthSession(session);
+        localStorage.setItem('shah_auth_session_v3', JSON.stringify(session));
+        setRoleState('partner');
+        localStorage.setItem(LOCAL_STORAGE_KEYS.ROLE, 'partner');
+        return { success: true, message: `Signed in to Partner Hub (${p.email}).` };
+      }
+      if (data.customer && data.token) {
+        const c: CustomerUser = data.customer;
+        setCustomers(prev => {
+          const exists = prev.some(x => x.id === c.id);
+          return exists ? prev.map(x => (x.id === c.id ? c : x)) : [c, ...prev];
+        });
+        setActiveCustomerIdState(c.id);
+        localStorage.setItem(LOCAL_STORAGE_KEYS.ACTIVE_CUSTOMER, c.id);
+        const session: AuthSession = {
+          isAuthenticated: true,
+          activeRole: 'CUSTOMER',
+          userId: c.id,
+          userName: c.name,
+          userEmail: c.email,
+          userPhone: c.phone,
+          phoneVerified: c.phoneVerified,
+          token: data.token,
+          expiresAt: new Date(Date.now() + 24 * 3600 * 1000).toISOString(),
+        };
+        setAuthSession(session);
+        localStorage.setItem('shah_auth_session_v3', JSON.stringify(session));
+        setRoleState('customer');
+        localStorage.setItem(LOCAL_STORAGE_KEYS.ROLE, 'customer');
+        return { success: true, message: `Signed in via Google (${c.email}).` };
+      }
+      return { success: false, message: 'Unexpected session response from server.' };
+    } catch {
+      return { success: false, message: 'Failed to establish verified Firebase session with server.' };
+    }
+  };
+
+  const registerCustomerAccount = async (data: {
     name: string;
     phone: string;
     email: string;
@@ -2593,62 +3095,44 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     pincode?: string;
     referralCodeUsed?: string;
   }) => {
-    const cleanEmail = data.email.trim().toLowerCase();
-    const existing = customers.find(c => c.email?.toLowerCase() === cleanEmail);
-    if (existing) {
-      return { success: false, customer: existing, message: 'Email already registered. Please sign in.' };
+    try {
+      const res = await fetch('/api/auth/customer-register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data),
+      });
+      const json = await res.json();
+      if (!res.ok || !json?.success || !json.customer || !json.token) {
+        return { success: false, message: json?.message || 'Registration failed.' };
+      }
+      const newCustomer: CustomerUser = json.customer;
+      setCustomers(prev => [newCustomer, ...prev]);
+      setActiveCustomerIdState(newCustomer.id);
+      localStorage.setItem(LOCAL_STORAGE_KEYS.ACTIVE_CUSTOMER, newCustomer.id);
+      setRoleState('customer');
+      localStorage.setItem(LOCAL_STORAGE_KEYS.ROLE, 'customer');
+
+      const session: AuthSession = {
+        isAuthenticated: true,
+        activeRole: 'CUSTOMER',
+        userId: newCustomer.id,
+        userName: newCustomer.name,
+        userEmail: newCustomer.email,
+        userPhone: newCustomer.phone,
+        phoneVerified: Boolean(phoneProofToken || newCustomer.phoneVerified),
+        token: json.token,
+        expiresAt: new Date(Date.now() + 24 * 3600 * 1000).toISOString(),
+      };
+      setAuthSession(session);
+      localStorage.setItem('shah_auth_session_v3', JSON.stringify(session));
+      addActivityLog('CUSTOMER_REGISTERED', 'CUSTOMER', newCustomer.name, `Customer ${newCustomer.customerCode} registered.`, 'success');
+      return { success: true, customer: newCustomer, message: json.message };
+    } catch {
+      return { success: false, message: 'Unable to reach registration server.' };
     }
-
-    const newId = `cust_${Date.now()}`;
-    const customerCode = `SHAH-CUST-${8600 + customers.length + 1}`;
-    const referralBonus = data.referralCodeUsed ? settings.referralBonusPoints || 50 : 0;
-
-    if (data.referralCodeUsed) {
-      setCustomers(prev =>
-        prev.map(c =>
-          c.referralCode?.toUpperCase() === data.referralCodeUsed?.trim().toUpperCase()
-            ? { ...c, rewardPoints: (c.rewardPoints || 0) + (settings.referralBonusPoints || 50) }
-            : c
-        )
-      );
-    }
-
-    const newCustomer: CustomerUser = {
-      id: newId,
-      customerCode,
-      name: data.name.trim(),
-      phone: data.phone.trim(),
-      phoneVerified: Boolean(phoneProofToken),
-      email: cleanEmail,
-      username: data.username || data.name.toLowerCase().replace(/\s+/g, '_'),
-      addresses: [
-        {
-          id: `addr_${Date.now()}`,
-          label: 'Home',
-          addressLine: data.addressLine || 'Address on file',
-          locality: data.locality || 'Local Area',
-          pincode: data.pincode || '110086',
-          isDefault: true,
-        },
-      ],
-      isSuspended: false,
-      totalOrders: 0,
-      totalSpent: 0,
-      rewardPoints: referralBonus,
-      referralCode: `${data.name.trim().split(' ')[0].toUpperCase()}-SHAH${Math.floor(10 + Math.random() * 89)}`,
-      referredByCode: data.referralCodeUsed?.trim().toUpperCase(),
-      createdAt: new Date().toISOString(),
-      lastLoginAt: new Date().toISOString(),
-    };
-
-    setCustomers(prev => [newCustomer, ...prev]);
-    setActiveCustomerId(newId);
-    setRole('customer');
-    addActivityLog('CUSTOMER_REGISTERED', 'CUSTOMER', newCustomer.name, `Customer ${customerCode} registered.`, 'success');
-    return { success: true, customer: newCustomer, message: `Welcome! Customer ID: ${customerCode}.` };
   };
 
-  const registerPartnerAccount = (data: {
+  const registerPartnerAccount = async (data: {
     name: string;
     phone: string;
     email: string;
@@ -2662,98 +3146,87 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     workingHours?: string;
     password?: string;
   }) => {
-    const cleanEmail = data.email.trim().toLowerCase();
-    const existing = partners.find(p => p.email?.toLowerCase() === cleanEmail);
-    if (existing) {
-      return { success: false, partner: existing, message: 'Partner email already registered.' };
+    try {
+      const res = await fetch('/api/auth/partner-register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data),
+      });
+      const json = await res.json();
+      if (!res.ok || !json?.success || !json.partner || !json.token) {
+        return { success: false, message: json?.message || 'Partner registration failed.' };
+      }
+      const newPartner: Partner = json.partner;
+      setPartners(prev => [...prev, newPartner]);
+      setActivePartnerIdState(newPartner.id);
+      localStorage.setItem(LOCAL_STORAGE_KEYS.ACTIVE_PARTNER, newPartner.id);
+
+      const session: AuthSession = {
+        isAuthenticated: true,
+        activeRole: 'SERVICE_PARTNER',
+        userId: newPartner.id,
+        userName: newPartner.name,
+        userEmail: newPartner.email,
+        userPhone: newPartner.phone,
+        token: json.token,
+        expiresAt: new Date(Date.now() + 24 * 3600 * 1000).toISOString(),
+      };
+      setAuthSession(session);
+      localStorage.setItem('shah_auth_session_v3', JSON.stringify(session));
+      setRoleState('partner');
+      localStorage.setItem(LOCAL_STORAGE_KEYS.ROLE, 'partner');
+      addActivityLog('PARTNER_REGISTERED', 'SERVICE_PARTNER', newPartner.name, `Partner ${newPartner.partnerCode} applied (Pending KYC Approval).`, 'warning');
+      return { success: true, partner: newPartner, message: json.message };
+    } catch {
+      return { success: false, message: 'Unable to reach partner registration server.' };
     }
-
-    const newId = `partner_${Date.now()}`;
-    const partnerCode = `SHAH-PRT-${8600 + partners.length + 1}`;
-    const pin = data.pincode.trim() || '110086';
-
-    const newPartner: Partner = {
-      id: newId,
-      partnerCode,
-      name: data.name.trim(),
-      phone: data.phone.trim(),
-      email: cleanEmail,
-      username: data.username || data.name.toLowerCase().replace(/\s+/g, '_'),
-      businessName: data.businessName.trim(),
-      hubName: `SHAH SIGNATURE ${data.businessName} Point`,
-      serviceAddress: data.serviceAddress.trim(),
-      pincode: pin,
-      servicePincodes: [pin],
-      city: data.city || 'Delhi',
-      state: data.state || 'Delhi',
-      serviceArea: `PIN ${pin} ${data.city || ''}`,
-      workingHours: data.workingHours || '08:00 AM - 08:00 PM IST',
-      maxDailyCapacity: 20,
-      currentActiveOrders: 0,
-      isOnline: false,
-      status: 'pending',
-      kycVerified: false,
-      commissionBlocked: false,
-      rating: 0,
-      reviewCount: 0,
-      totalOrdersCompleted: 0,
-      walletBalance: 0,
-      totalEarnings: 0,
-      commissionPaid: 0,
-      commissionPending: 0,
-      commissionOverdue: 0,
-      servicesOffered: data.servicesOffered.length > 0 ? data.servicesOffered : ['ironing_normal', 'ironing_steam'],
-      documents: [],
-      performance: {
-        totalOffered: 0,
-        totalAccepted: 0,
-        totalRejected: 0,
-        totalCancelledByPartner: 0,
-        onTimePickups: 0,
-        onTimeDeliveries: 0,
-        complaintsCount: 0,
-        disputesCount: 0,
-        acceptanceRate: 100,
-        rejectionRate: 0,
-        cancellationRate: 0,
-        onTimePickupRate: 100,
-        onTimeDeliveryRate: 100,
-        complaintRate: 0,
-      },
-      joinedDate: new Date().toISOString().split('T')[0],
-      lastLoginAt: new Date().toISOString(),
-    };
-
-    setPartners(prev => [...prev, newPartner]);
-    setActivePartnerId(newId);
-    setRole('partner');
-    addActivityLog('PARTNER_REGISTERED', 'SERVICE_PARTNER', newPartner.name, `Partner ${partnerCode} applied (Pending KYC Approval).`, 'warning');
-    return {
-      success: true,
-      partner: newPartner,
-      message: `Application submitted! Partner ID: ${partnerCode}. Pending Super Admin KYC approval.`,
-    };
   };
 
-  const requestPasswordReset = (email: string, targetRole: AppRole) => {
-    const clean = email.trim().toLowerCase();
-    const token = `rst_${Math.random().toString(36).substring(2, 9)}_${Date.now()}`;
-    addActivityLog('PASSWORD_RESET_TOKEN_ISSUED', targetRole, clean, `Recovery request logged for ${clean}.`, 'warning');
-    return {
-      success: true,
-      resetToken: token,
-      message: `Expiring recovery token generated for ${clean} (Valid 15 minutes).`,
-    };
+  const requestPasswordReset = async (email: string, targetRole: AppRole) => {
+    try {
+      const res = await fetch('/api/auth/password-reset/request', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, targetRole }),
+      });
+      const json = await res.json();
+      return {
+        success: Boolean(res.ok && json.success),
+        message: json.message || 'Unable to process password reset request.',
+      };
+    } catch {
+      return { success: false, message: 'Network error requesting password reset.' };
+    }
   };
 
   const confirmPasswordReset = () => {
-    addActivityLog('PASSWORD_RESET_COMPLETED', 'SYSTEM', 'Password Recovery', 'Password reset completed.', 'success');
-    return { success: true, message: 'Password updated. Please sign in.' };
+    return {
+      success: false,
+      message: 'Out-of-band verified email link required to complete password reset.',
+    };
   };
 
-  const changePassword = (targetRole: AppRole, userId: string) => {
-    addActivityLog('PASSWORD_CHANGED', targetRole, userId, 'Password updated.', 'success');
-    return { success: true, message: 'Your password has been updated.' };
+  const changePassword = async (targetRole: AppRole, _userId: string, oldPass: string, newPass: string) => {
+    if (!authSession?.isAuthenticated || !authSession.token) {
+      return { success: false, message: 'Sign in required to change password.' };
+    }
+    try {
+      const res = await fetch('/api/auth/change-password', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${authSession.token}`,
+        },
+        body: JSON.stringify({ oldPassword: oldPass, newPassword: newPass }),
+      });
+      const json = await res.json();
+      if (res.ok && json.success) {
+        addActivityLog('PASSWORD_CHANGED', targetRole, authSession.userName || 'Account', 'Password updated.', 'success');
+      }
+      return { success: Boolean(res.ok && json.success), message: json.message || 'Unable to update password.' };
+    } catch {
+      return { success: false, message: 'Network error updating password.' };
+    }
   };
 
   const logout = () => {
@@ -2762,8 +3235,9 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     setPhoneProofToken(null);
     localStorage.removeItem('shah_auth_session_v3');
     localStorage.removeItem('shah_phone_proof_v1');
+    localStorage.setItem(LOCAL_STORAGE_KEYS.ROLE, 'customer');
     signOutFirebase().catch(() => {});
-    setRole('customer');
+    setRoleState('customer');
   };
 
   return (
@@ -2898,6 +3372,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         loginAdmin,
         loginCustomer,
         loginPartner,
+        loginWithGoogleFirebase,
         registerCustomerAccount,
         registerPartnerAccount,
         requestPasswordReset,

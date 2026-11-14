@@ -166,6 +166,47 @@ export const CustomerDashboard: React.FC = () => {
 
   const cleanWhatsApp = businessSettings.whatsappSupportNumber.replace(/[^0-9]/g, '') || '919899229102';
 
+  if (
+    !authSession?.isAuthenticated ||
+    (authSession.activeRole !== 'CUSTOMER' && authSession.activeRole !== 'SUPER_ADMIN') ||
+    !authSession.token
+  ) {
+    return (
+      <section id="track" className="py-12 bg-[#F8F9FB] border-b border-slate-200">
+        <div className="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8">
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-8 text-center space-y-4">
+            <div className="w-12 h-12 mx-auto rounded-full bg-[#0B132B] text-[#D4AF37] flex items-center justify-center">
+              <ShieldCheck className="w-6 h-6" />
+            </div>
+            <div className="text-xs font-semibold text-[#AA7C11] tracking-widest uppercase">
+              Private Customer Concierge Portal
+            </div>
+            <h2 className="text-2xl font-bold font-brand text-[#0B132B]">
+              Sign In to Track Orders &amp; View Receipts
+            </h2>
+            <p className="text-xs text-slate-600 max-w-md mx-auto leading-relaxed">
+              Your live order tracking, doorstep pickup/delivery OTPs, saved addresses, and garment protection claims are protected and private to your account.
+            </p>
+            <div className="flex flex-wrap items-center justify-center gap-3 pt-2">
+              <button
+                onClick={() => openAuthModal('customer', 'login')}
+                className="px-6 py-2.5 bg-[#0B132B] hover:bg-[#1C2541] text-[#F3E5AB] text-xs font-bold rounded-lg cursor-pointer shadow-sm"
+              >
+                Customer Sign In
+              </button>
+              <button
+                onClick={() => openAuthModal('customer', 'register')}
+                className="px-6 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-800 text-xs font-semibold rounded-lg cursor-pointer"
+              >
+                Create Account
+              </button>
+            </div>
+          </div>
+        </div>
+      </section>
+    );
+  }
+
   return (
     <section id="track" className="py-12 bg-[#F8F9FB] min-h-[700px] border-b border-slate-200">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
@@ -1002,17 +1043,17 @@ export const CustomerDashboard: React.FC = () => {
               )}
 
               <form
-                onSubmit={(e) => {
+                onSubmit={async (e) => {
                   e.preventDefault();
-                  if (newPwd.length < 6) {
-                    setPwdMsg({ type: 'error', text: 'New password must be at least 6 characters long.' });
+                  if (newPwd.length < 8) {
+                    setPwdMsg({ type: 'error', text: 'New password must be at least 8 characters long.' });
                     return;
                   }
                   if (newPwd !== confirmPwd) {
                     setPwdMsg({ type: 'error', text: 'New passwords do not match.' });
                     return;
                   }
-                  const res = changePassword('CUSTOMER', customerUser.id, currentPwd, newPwd);
+                  const res = await changePassword('CUSTOMER', customerUser.id, currentPwd, newPwd);
                   if (res.success) {
                     setPwdMsg({ type: 'success', text: res.message });
                     setCurrentPwd('');
@@ -1043,7 +1084,7 @@ export const CustomerDashboard: React.FC = () => {
                       required
                       value={newPwd}
                       onChange={(e) => setNewPwd(e.target.value)}
-                      placeholder="Min 6 characters"
+                      placeholder="Min 8 characters"
                       className="w-full px-3 py-1.5 border border-slate-300 rounded text-slate-900"
                     />
                   </div>

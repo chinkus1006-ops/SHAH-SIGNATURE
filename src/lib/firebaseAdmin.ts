@@ -329,8 +329,53 @@ export async function verifyPhoneOtp(
   };
 }
 
+const FIREBASE_PROJECT_ID = 'gen-lang-client-0123011776';
+let cachedGoogleCerts: { certs: Record<string, string>; expiresAt: number } | null = null;
+
+async function fetchGoogleSecureTokenCerts(): Promise<Record<string, string>> {
+  const now = Date.now();
+  if (cachedGoogleCerts && cachedGoogleCerts.expiresAt > now) {
+    return cachedGoogleCerts.certs;
+  }
+  const resp = await fetch(
+    'https://www.googleapis.com/robot/v1/metadata/x509/securetoken@system.gserviceaccount.com'
+  );
+  if (!resp.ok) {
+    throw new Error(`Failed to fetch Google Firebase public keys (${resp.status})`);
+  }
+  const certs = (await resp.json()) as Record<string, string>;
+  const cacheControl = resp.headers.get('cache-control') || '';
+  const maxAgeMatch = cacheControl.match(/max-age=(\d+)/i);
+  const ttlMs = maxAgeMatch ? Number(maxAgeMatch[1]) * 1000 : 3600 * 1000;
+  cachedGoogleCerts = { certs, expiresAt: now + ttlMs };
+  return certs;
+}
+
 /**
- * Verify Firebase Client ID Token (e.g., from Firebase Phone Auth or Google Sign-In)
+ * Cryptographically hash a user password using Node crypto.scryptSync with random 16-byte salt.
+ * Never persisted in Firestore or returned to client responses.
+ */
+export function hashPasswordScrypt(password: string): { salt: string; hash: string } {
+  const salt = crypto.randomBytes(16).toString('hex');
+  const hash = crypto.scryptSync(password, salt, 64).toString('hex');
+  return { salt, hash };
+}
+
+export function verifyPasswordScrypt(password: string, salt: string, expectedHash: string): boolean {
+  if (!password || !salt || !expectedHash) return false;
+  try {
+    const derived = crypto.scryptSync(password, salt, 64);
+    const expectedBuf = Buffer.from(expectedHash, 'hex');
+    if (derived.length !== expectedBuf.length) return false;
+    return crypto.timingSafeEqual(derived, expectedBuf);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Verify Firebase Client ID Token (from Firebase Auth Google Sign-In or Phone Auth).
+ * Uses Firebase Admin SDK when configured, or verifies RS256 JWT signature against Google's official X.509 certs.
  */
 export async function verifyFirebaseClientToken(idToken: string): Promise<{
   valid: boolean;
@@ -338,18 +383,60 @@ export async function verifyFirebaseClientToken(idToken: string): Promise<{
   phoneNumber?: string;
   email?: string;
   emailVerified?: boolean;
+  name?: string;
 }> {
-  if (!isRealAdminSdkReady || !adminApp) {
-    return { valid: false };
+  if (!idToken || typeof idToken !== 'string') return { valid: false };
+
+  if (isRealAdminSdkReady && adminApp) {
+    try {
+      const decoded = await getAuth(adminApp).verifyIdToken(idToken);
+      return {
+        valid: true,
+        uid: decoded.uid,
+        phoneNumber: decoded.phone_number,
+        email: decoded.email,
+        emailVerified: decoded.email_verified,
+        name: decoded.name,
+      };
+    } catch {
+      return { valid: false };
+    }
   }
+
+  // Cryptographic RS256 signature verification via Google securetoken public certs
   try {
-    const decoded = await getAuth(adminApp).verifyIdToken(idToken);
+    const parts = idToken.split('.');
+    if (parts.length !== 3) return { valid: false };
+    const [headerB64, payloadB64, sigB64] = parts;
+    const header = JSON.parse(Buffer.from(headerB64, 'base64url').toString('utf8'));
+    const payload = JSON.parse(Buffer.from(payloadB64, 'base64url').toString('utf8'));
+
+    if (header.alg !== 'RS256' || typeof header.kid !== 'string') return { valid: false };
+    const nowSec = Math.floor(Date.now() / 1000);
+    if (payload.aud !== FIREBASE_PROJECT_ID) return { valid: false };
+    if (payload.iss !== `https://securetoken.google.com/${FIREBASE_PROJECT_ID}`) return { valid: false };
+    if (typeof payload.sub !== 'string' || !payload.sub || payload.sub.length > 128) return { valid: false };
+    if (typeof payload.exp !== 'number' || payload.exp <= nowSec) return { valid: false };
+    if (typeof payload.iat !== 'number' || payload.iat > nowSec + 300) return { valid: false };
+
+    const certs = await fetchGoogleSecureTokenCerts();
+    const pemCert = certs[header.kid];
+    if (!pemCert) return { valid: false };
+
+    const verifier = crypto.createVerify('RSA-SHA256');
+    verifier.update(`${headerB64}.${payloadB64}`);
+    verifier.end();
+    const sigBuf = Buffer.from(sigB64, 'base64url');
+    const isSigValid = verifier.verify(pemCert, sigBuf);
+    if (!isSigValid) return { valid: false };
+
     return {
       valid: true,
-      uid: decoded.uid,
-      phoneNumber: decoded.phone_number,
-      email: decoded.email,
-      emailVerified: decoded.email_verified,
+      uid: payload.sub,
+      phoneNumber: payload.phone_number,
+      email: payload.email,
+      emailVerified: Boolean(payload.email_verified),
+      name: payload.name,
     };
   } catch {
     return { valid: false };

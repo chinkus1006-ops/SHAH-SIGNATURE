@@ -38,6 +38,7 @@ export const AuthModal: React.FC = () => {
     loginAdmin,
     loginCustomer,
     loginPartner,
+    loginWithGoogleFirebase,
     registerCustomerAccount,
     registerPartnerAccount,
     requestPasswordReset,
@@ -124,40 +125,24 @@ export const AuthModal: React.FC = () => {
     resetFormState();
   };
 
-  // Google Firebase Sign-In (Customer or Partner)
+  // Google Firebase Sign-In (Customer, Partner or Verified Owner Admin)
   const handleGoogleSignIn = async (targetRole: 'customer' | 'partner') => {
     setIsLoading(true);
     setErrorMessage('');
     setSuccessMessage('');
     try {
       const fbUser = await signInWithGoogleFirebase();
-      if (targetRole === 'customer') {
-        const loginRes = loginCustomer({ emailOrCode: fbUser.email || fbUser.uid });
-        if (loginRes.success) {
-          setSuccessMessage(`Signed in via Google (${fbUser.email}).`);
-          setTimeout(() => setIsAuthModalOpen(false), 800);
-        } else {
-          const regRes = registerCustomerAccount({
-            name: fbUser.displayName || 'SHAH SIGNATURE Guest',
-            phone: fbUser.phoneNumber || '+91 0000000000',
-            email: fbUser.email || `${fbUser.uid}@firebase.user`,
-            pincode: pincode || '110086',
-            addressLine: 'Update delivery address in Address Book',
-          });
-          setSuccessMessage(regRes.message);
-          setTimeout(() => setIsAuthModalOpen(false), 1000);
-        }
+      const sessionRes = await loginWithGoogleFirebase(targetRole, fbUser.idToken);
+      if (sessionRes.success) {
+        setSuccessMessage(sessionRes.message || `Signed in via Google (${fbUser.email}).`);
+        setTimeout(() => setIsAuthModalOpen(false), 800);
+      } else if (sessionRes.needsPartnerRegistration) {
+        setEmailOrIdent(sessionRes.firebaseEmail || fbUser.email || '');
+        setFullName(sessionRes.firebaseName || fbUser.displayName || '');
+        setAuthModalMode('register');
+        setSuccessMessage(`Google account (${fbUser.email}) verified. Complete hub KYC details below to apply.`);
       } else {
-        const partnerRes = loginPartner({ emailOrCode: fbUser.email || fbUser.uid });
-        if (partnerRes.success) {
-          setSuccessMessage(`Signed in to Partner Hub via Google (${fbUser.email}).`);
-          setTimeout(() => setIsAuthModalOpen(false), 800);
-        } else {
-          setEmailOrIdent(fbUser.email || '');
-          setFullName(fbUser.displayName || '');
-          setAuthModalMode('register');
-          setSuccessMessage(`Google account (${fbUser.email}) verified. Complete hub KYC details below to apply.`);
-        }
+        setErrorMessage(sessionRes.message || 'Google Sign-In verification failed.');
       }
     } catch (err: any) {
       setErrorMessage(err?.message || 'Google Sign-In was cancelled or failed.');
@@ -208,8 +193,8 @@ export const AuthModal: React.FC = () => {
     }
   };
 
-  // 2. Customer Login (Supports Mobile Number + Password OR Email/Customer ID)
-  const handleCustomerLogin = (e: React.FormEvent) => {
+  // 2. Customer Login (Real Server Scrypt Auth)
+  const handleCustomerLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMessage('');
     setSuccessMessage('');
@@ -218,11 +203,14 @@ export const AuthModal: React.FC = () => {
       setErrorMessage('Please enter your Mobile number, Email, or Customer ID.');
       return;
     }
+    if (!password) {
+      setErrorMessage('Please enter your password.');
+      return;
+    }
 
     setIsLoading(true);
-    setTimeout(() => {
-      setIsLoading(false);
-      const res = loginCustomer({ emailOrCode: emailOrIdent, password });
+    try {
+      const res = await loginCustomer({ emailOrCode: emailOrIdent.trim(), password });
       if (res.success) {
         setSuccessMessage(res.message);
         setTimeout(() => {
@@ -231,11 +219,15 @@ export const AuthModal: React.FC = () => {
       } else {
         setErrorMessage(res.message);
       }
-    }, 500);
+    } catch {
+      setErrorMessage('Unable to reach authentication server.');
+    } finally {
+      setIsLoading(false);
+    }
   };
 
-  // 3. Partner Login
-  const handlePartnerLogin = (e: React.FormEvent) => {
+  // 3. Partner Login (Real Server Scrypt Auth)
+  const handlePartnerLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMessage('');
     setSuccessMessage('');
@@ -244,11 +236,14 @@ export const AuthModal: React.FC = () => {
       setErrorMessage('Please enter your Registered Mobile, Email, or Partner ID.');
       return;
     }
+    if (!password) {
+      setErrorMessage('Please enter your hub password.');
+      return;
+    }
 
     setIsLoading(true);
-    setTimeout(() => {
-      setIsLoading(false);
-      const res = loginPartner({ emailOrCode: emailOrIdent, password });
+    try {
+      const res = await loginPartner({ emailOrCode: emailOrIdent.trim(), password });
       if (res.success) {
         setSuccessMessage(res.message);
         setTimeout(() => {
@@ -257,11 +252,15 @@ export const AuthModal: React.FC = () => {
       } else {
         setErrorMessage(res.message);
       }
-    }, 500);
+    } catch {
+      setErrorMessage('Unable to reach partner authentication server.');
+    } finally {
+      setIsLoading(false);
+    }
   };
 
-  // 4. Customer Registration (Real Phone OTP when SMS configured; honest Pending state if unconfigured)
-  const handleCustomerRegister = (e: React.FormEvent) => {
+  // 4. Customer Registration (Real Server Password Hash + Phone Verification Proof)
+  const handleCustomerRegister = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMessage('');
     setSuccessMessage('');
@@ -292,9 +291,8 @@ export const AuthModal: React.FC = () => {
     }
 
     setIsLoading(true);
-    setTimeout(() => {
-      setIsLoading(false);
-      const res = registerCustomerAccount({
+    try {
+      const res = await registerCustomerAccount({
         name: fullName.trim(),
         phone: mobileNumber.startsWith('+91') ? mobileNumber.trim() : `+91 ${mobileNumber.trim()}`,
         email: emailOrIdent.trim() || `cust_${Date.now()}@shahsignature.internal`,
@@ -317,11 +315,15 @@ export const AuthModal: React.FC = () => {
       } else {
         setErrorMessage(res.message);
       }
-    }, 500);
+    } catch {
+      setErrorMessage('Network error during customer registration.');
+    } finally {
+      setIsLoading(false);
+    }
   };
 
-  // 5. Partner Registration
-  const handlePartnerRegister = (e: React.FormEvent) => {
+  // 5. Partner Registration (Always Pending Approval + Server Password Hash)
+  const handlePartnerRegister = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMessage('');
     setSuccessMessage('');
@@ -347,9 +349,8 @@ export const AuthModal: React.FC = () => {
     }
 
     setIsLoading(true);
-    setTimeout(() => {
-      setIsLoading(false);
-      const res = registerPartnerAccount({
+    try {
+      const res = await registerPartnerAccount({
         name: fullName,
         phone: mobileNumber.startsWith('+91') ? mobileNumber : `+91 ${mobileNumber}`,
         email: emailOrIdent,
@@ -371,11 +372,15 @@ export const AuthModal: React.FC = () => {
       } else {
         setErrorMessage(res.message);
       }
-    }, 500);
+    } catch {
+      setErrorMessage('Network error submitting partner application.');
+    } finally {
+      setIsLoading(false);
+    }
   };
 
-  // 6. Request Password Reset Link
-  const handleRequestReset = (e: React.FormEvent) => {
+  // 6. Request Password Reset Link (Requires Server Email Gateway)
+  const handleRequestReset = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMessage('');
     setSuccessMessage('');
@@ -386,14 +391,21 @@ export const AuthModal: React.FC = () => {
     }
 
     setIsLoading(true);
-    setTimeout(() => {
-      setIsLoading(false);
+    try {
       const roleMapped = authModalRole === 'admin' ? 'SUPER_ADMIN' : authModalRole === 'partner' ? 'SERVICE_PARTNER' : 'CUSTOMER';
-      const res = requestPasswordReset(resetEmail, roleMapped);
-      setSuccessMessage(res.message);
-      setResetToken(res.resetToken || '');
-      setAuthModalMode('reset');
-    }, 600);
+      const res = await requestPasswordReset(resetEmail.trim(), roleMapped);
+      if (res.success) {
+        setSuccessMessage(res.message);
+        setResetToken(res.resetToken || '');
+        setAuthModalMode('reset');
+      } else {
+        setErrorMessage(res.message);
+      }
+    } catch {
+      setErrorMessage('Unable to reach password recovery service.');
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   // 7. Confirm New Password
@@ -411,16 +423,16 @@ export const AuthModal: React.FC = () => {
       return;
     }
 
-    setIsLoading(true);
-    setTimeout(() => {
-      setIsLoading(false);
-      const res = confirmPasswordReset(enteredResetToken || resetToken, newPassword);
+    const res = confirmPasswordReset(enteredResetToken || resetToken, newPassword);
+    if (res.success) {
       setSuccessMessage(res.message);
       setTimeout(() => {
         setAuthModalMode('login');
         setSuccessMessage('Password reset successfully. Please sign in with your new credentials.');
       }, 1000);
-    }, 500);
+    } else {
+      setErrorMessage(res.message);
+    }
   };
 
   // Genuine Phone OTP Verification via Server-Side SMS Gateway
@@ -627,16 +639,7 @@ export const AuthModal: React.FC = () => {
                       <label className="text-xs font-semibold text-slate-300">
                         Admin Master Password
                       </label>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setResetEmail(adminUser.email);
-                          setAuthModalMode('forgot');
-                        }}
-                        className="text-xs text-[#D4AF37] hover:underline"
-                      >
-                        Forgot Password?
-                      </button>
+                      <span className="text-[10px] text-slate-400">Managed via Server Environment</span>
                     </div>
                     <div className="relative">
                       <Lock className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
@@ -752,6 +755,7 @@ export const AuthModal: React.FC = () => {
                         onChange={e => setPassword(e.target.value)}
                         placeholder="••••••••••••"
                         className="w-full pl-9 pr-10 py-2.5 bg-[#0B132B] border border-slate-700 rounded-lg text-sm text-white focus:outline-none focus:border-[#D4AF37]"
+                        required
                       />
                       <button
                         type="button"
@@ -1072,6 +1076,7 @@ export const AuthModal: React.FC = () => {
                         onChange={e => setPassword(e.target.value)}
                         placeholder="••••••••••••"
                         className="w-full pl-9 pr-10 py-2.5 bg-[#0B132B] border border-slate-700 rounded-lg text-sm text-white focus:outline-none focus:border-[#D4AF37]"
+                        required
                       />
                       <button
                         type="button"

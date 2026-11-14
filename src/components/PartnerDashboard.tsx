@@ -68,6 +68,32 @@ export const PartnerDashboard: React.FC = () => {
   const [regHours, setRegHours] = useState('08:00 AM - 08:00 PM IST');
   const [regServices] = useState<ServiceType[]>(['ironing_normal', 'ironing_steam', 'laundry', 'dry_cleaning']);
 
+  // Guard unauthenticated or non-partner visitors
+  if (
+    !authSession?.isAuthenticated ||
+    (authSession.activeRole !== 'SERVICE_PARTNER' && authSession.activeRole !== 'SUPER_ADMIN') ||
+    !authSession.token
+  ) {
+    return (
+      <section className="py-16 bg-[#F4F5F8] min-h-[550px]">
+        <div className="max-w-lg mx-auto px-4">
+          <div className="bg-white border border-slate-200 rounded-2xl p-8 text-center shadow-sm space-y-4">
+            <h2 className="text-xl font-bold font-brand text-[#0B132B]">Service Partner Authentication Required</h2>
+            <p className="text-xs text-slate-600">
+              Please sign in with your registered Service Partner credentials to view assigned orders and dispatch requests.
+            </p>
+            <button
+              onClick={() => openAuthModal('partner', 'login')}
+              className="px-5 py-2.5 bg-[#0B132B] text-[#F3E5AB] font-bold text-xs rounded-lg cursor-pointer"
+            >
+              Partner Sign In
+            </button>
+          </div>
+        </div>
+      </section>
+    );
+  }
+
   const partnerCoversPin = (pin: string) =>
     activePartner.pincode === pin || (activePartner.servicePincodes || []).includes(pin);
 
@@ -116,16 +142,26 @@ export const PartnerDashboard: React.FC = () => {
     try {
       const lockRes = await fetch('/api/orders/accept-atomic', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${authSession.token}`,
+        },
         body: JSON.stringify({ orderId, partnerId: activePartner.id, partnerName: activePartner.name }),
       });
       const lockData = await lockRes.json();
-      if (!lockRes.ok && lockRes.status === 409) {
-        setActionAlert({ type: 'error', message: lockData.message || 'Already claimed by another partner.' });
+      if (!lockRes.ok) {
+        setActionAlert({
+          type: 'error',
+          message: lockData.message || 'Server denied order acceptance.',
+        });
         return;
       }
     } catch {
-      // Proceed with local lock check
+      setActionAlert({
+        type: 'error',
+        message: 'Unable to reach dispatch lock server. Please retry.',
+      });
+      return;
     }
 
     const result = acceptOrder(orderId, activePartner.id);
@@ -138,7 +174,10 @@ export const PartnerDashboard: React.FC = () => {
     const res = rejectOrderOffer(orderId, activePartner.id, 'Declined by partner');
     fetch('/api/orders/escalate', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${authSession.token}`,
+      },
       body: JSON.stringify({
         orderId,
         pincode,
@@ -282,22 +321,24 @@ export const PartnerDashboard: React.FC = () => {
             )}
           </div>
 
-          {/* Quick Partner Switcher for Demo testing */}
+          {/* Partner Switcher only visible to Super Admin */}
           <div className="flex flex-wrap items-center gap-3">
-            <div className="text-xs text-slate-400">
-              <span className="mr-1">Switch Partner Profile:</span>
-              <select
-                value={activePartner.id}
-                onChange={(e) => setActivePartnerId(e.target.value)}
-                className="bg-[#060B18] text-white border border-slate-700 rounded px-2.5 py-1 text-xs focus:outline-none focus:border-[#D4AF37]"
-              >
-                {partners.map(p => (
-                  <option key={p.id} value={p.id}>
-                    {p.name} ({p.status === 'active' ? 'Approved' : 'Pending'})
-                  </option>
-                ))}
-              </select>
-            </div>
+            {authSession.activeRole === 'SUPER_ADMIN' && (
+              <div className="text-xs text-slate-400">
+                <span className="mr-1">Inspect Partner (Admin):</span>
+                <select
+                  value={activePartner.id}
+                  onChange={(e) => setActivePartnerId(e.target.value)}
+                  className="bg-[#060B18] text-white border border-slate-700 rounded px-2.5 py-1 text-xs focus:outline-none focus:border-[#D4AF37]"
+                >
+                  {partners.map(p => (
+                    <option key={p.id} value={p.id}>
+                      {p.name} ({p.status === 'active' ? 'Approved' : 'Pending'})
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
 
             {/* Online / Offline Toggle Button */}
             <button
@@ -504,12 +545,8 @@ export const PartnerDashboard: React.FC = () => {
           </button>
 
           <button
-            onClick={() => setActiveTab('register')}
-            className={`px-4 py-2 text-xs sm:text-sm font-semibold rounded-md transition-all cursor-pointer flex items-center gap-2 whitespace-nowrap ${
-              activeTab === 'register'
-                ? 'bg-[#0B132B] text-white shadow-xs'
-                : 'bg-white text-slate-700 hover:bg-slate-100 border border-slate-200'
-            }`}
+            onClick={() => openAuthModal('partner', 'register')}
+            className="px-4 py-2 text-xs sm:text-sm font-semibold rounded-md transition-all cursor-pointer flex items-center gap-2 whitespace-nowrap bg-white text-slate-700 hover:bg-slate-100 border border-slate-200"
           >
             <UserPlus className="w-4 h-4 text-[#D4AF37]" />
             <span>Register New Hub</span>

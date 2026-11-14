@@ -20,9 +20,10 @@ import { Footer } from './components/Footer';
 import { ServiceAreaMap } from './components/ServiceAreaMap';
 import { RetentionHub } from './components/RetentionHub';
 import { AboutAndFaqSection } from './components/AboutAndFaqSection';
+import { ShieldCheck, Bike, Lock } from 'lucide-react';
 
 const MainLayout: React.FC = () => {
-  const { role } = useApp();
+  const { role, authSession, openAuthModal } = useApp();
   const [gmpQuotaExceeded, setGmpQuotaExceeded] = React.useState(false);
 
   React.useEffect(() => {
@@ -72,13 +73,67 @@ const MainLayout: React.FC = () => {
 
         {role === 'partner' && (
           <div className="space-y-6">
-            <PartnerDashboard />
+            {authSession?.isAuthenticated && authSession.activeRole === 'SERVICE_PARTNER' && authSession.token ? (
+              <PartnerDashboard />
+            ) : (
+              <section className="py-20 px-4">
+                <div className="max-w-lg mx-auto bg-white border border-slate-200 rounded-2xl shadow-lg p-8 text-center space-y-4">
+                  <div className="w-14 h-14 mx-auto rounded-full bg-[#0B132B] text-[#D4AF37] flex items-center justify-center">
+                    <Bike className="w-7 h-7" />
+                  </div>
+                  <h2 className="text-2xl font-bold font-brand text-[#0B132B]">Service Partner Hub Locked</h2>
+                  <p className="text-xs text-slate-600 leading-relaxed">
+                    Access to the dispatch radar, assigned orders, evidence capture, and weekly commission ledger requires an authenticated Service Partner account.
+                  </p>
+                  <div className="flex items-center justify-center gap-3 pt-2">
+                    <button
+                      onClick={() => openAuthModal('partner', 'login')}
+                      className="px-5 py-2.5 bg-[#0B132B] text-[#F3E5AB] text-xs font-bold rounded-lg hover:bg-slate-900 cursor-pointer"
+                    >
+                      Sign In as Partner
+                    </button>
+                    <button
+                      onClick={() => openAuthModal('partner', 'register')}
+                      className="px-5 py-2.5 bg-slate-100 text-slate-800 text-xs font-semibold rounded-lg hover:bg-slate-200 cursor-pointer"
+                    >
+                      Apply as New Partner
+                    </button>
+                  </div>
+                </div>
+              </section>
+            )}
           </div>
         )}
 
         {role === 'admin' && (
           <div className="space-y-6">
-            <AdminDashboard />
+            {authSession?.isAuthenticated && authSession.activeRole === 'SUPER_ADMIN' && authSession.token ? (
+              <AdminDashboard />
+            ) : (
+              <section className="py-20 px-4">
+                <div className="max-w-lg mx-auto bg-[#060B18] text-white border border-[#D4AF37]/40 rounded-2xl shadow-2xl p-8 text-center space-y-4">
+                  <div className="w-14 h-14 mx-auto rounded-full bg-[#D4AF37]/20 text-[#D4AF37] flex items-center justify-center border border-[#D4AF37]/40">
+                    <Lock className="w-7 h-7" />
+                  </div>
+                  <div className="flex items-center justify-center gap-1.5 text-xs font-bold uppercase tracking-widest text-[#F3E5AB]">
+                    <ShieldCheck className="w-4 h-4 text-[#D4AF37]" />
+                    <span>Super Admin Access Denied</span>
+                  </div>
+                  <h2 className="text-2xl font-bold font-brand text-white">Restricted Control Room</h2>
+                  <p className="text-xs text-slate-300 leading-relaxed">
+                    Only the authorized Super Admin verified by the backend authentication server can open platform controls, partner approvals, customer PII, or commission records.
+                  </p>
+                  <div className="pt-2">
+                    <button
+                      onClick={() => openAuthModal('admin', 'login')}
+                      className="px-6 py-2.5 bg-gradient-to-r from-[#F3E5AB] via-[#D4AF37] to-[#C5A059] text-[#060B18] text-xs font-bold rounded-lg hover:brightness-105 cursor-pointer"
+                    >
+                      Authenticate Super Admin
+                    </button>
+                  </div>
+                </div>
+              </section>
+            )}
           </div>
         )}
       </main>

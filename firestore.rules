@@ -256,7 +256,8 @@ service cloud.firestore {
         isValidOrder(incoming()) &&
         incoming().customerId == request.auth.uid &&
         (incoming().status == 'BOOKED' || incoming().status == 'order_placed' || incoming().status == 'searching_for_partner') &&
-        incoming().assignedPartnerId == null;
+        incoming().assignedPartnerId == null &&
+        (!('paymentStatus' in incoming()) || incoming().paymentStatus == 'pending_at_delivery');
 
       allow update: if isValidId(orderId) &&
         isVerifiedIdentity() &&
@@ -265,6 +266,9 @@ service cloud.firestore {
           isAdmin() ||
           (
             !isTerminalOrderStatus(existing().status) &&
+            incoming().totalAmount == existing().totalAmount &&
+            (!('subtotal' in existing()) || incoming().subtotal == existing().subtotal) &&
+            (!('platformCommissionAmount' in existing()) || incoming().platformCommissionAmount == existing().platformCommissionAmount) &&
             (
               // Customer cancelling before pickup
               (
@@ -304,7 +308,7 @@ service cloud.firestore {
 
       allow list: if isSignedIn() && (
         existing().ownerUid == request.auth.uid ||
-        existing().status == 'active' ||
+        existing().id == request.auth.uid ||
         (request.auth.token.email_verified == true && (
           request.auth.token.email == 'chinku.s1006@gmail.com' ||
           request.auth.token.email == 'shahsignature@gmail.com'
@@ -314,9 +318,10 @@ service cloud.firestore {
       allow create: if isValidId(partnerId) &&
         isVerifiedIdentity() &&
         isValidPartner(incoming()) &&
+        incoming().ownerUid == request.auth.uid &&
         incoming().status == 'pending' &&
         (!('kycVerified' in incoming()) || incoming().kycVerified == false) &&
-        (!('ownerUid' in incoming()) || incoming().ownerUid == request.auth.uid);
+        (!('commissionBlocked' in incoming()) || incoming().commissionBlocked == false);
 
       allow update: if isValidId(partnerId) &&
         isVerifiedIdentity() &&
@@ -325,6 +330,9 @@ service cloud.firestore {
           (
             (request.auth.uid == partnerId || existing().ownerUid == request.auth.uid) &&
             incoming().status == existing().status &&
+            incoming().ownerUid == existing().ownerUid &&
+            (!('kycVerified' in incoming()) || incoming().kycVerified == existing().kycVerified) &&
+            (!('isOnline' in incoming()) || incoming().isOnline == existing().isOnline || (existing().status == 'active' && (!('kycVerified' in existing()) || existing().kycVerified == true))) &&
             incoming().diff(existing()).affectedKeys().hasOnly(['isOnline', 'workingHours', 'serviceAddress', 'upiId', 'documents', 'lastLoginAt'])
           )
         );
@@ -390,7 +398,10 @@ service cloud.firestore {
         (isAdmin() || incoming().partnerId == request.auth.uid);
       allow update: if isValidId(evidenceId) &&
         isVerifiedIdentity() &&
-        isValidGarmentEvidence(incoming()) && (
+        isValidGarmentEvidence(incoming()) &&
+        incoming().orderId == existing().orderId &&
+        incoming().customerId == existing().customerId &&
+        (!('partnerId' in existing()) || incoming().partnerId == existing().partnerId) && (
           isAdmin() ||
           (existing().customerId == request.auth.uid && incoming().diff(existing()).affectedKeys().hasOnly(['customerSignOff', 'customerSignedAt', 'deliveryConfirmedByCustomer', 'deliveryConfirmedAt', 'customerInstructions'])) ||
           (existing().partnerId == request.auth.uid && incoming().diff(existing()).affectedKeys().hasOnly(['verifiedCount', 'deliveredCount', 'garmentRecords', 'hasPreExistingDamage', 'damageNotes', 'stainChecklist', 'customerInstructions', 'specialCareNotes', 'pickupPhotoUrls', 'beforeServicePhotoUrls', 'afterServicePhotoUrls', 'deliveryPhotoUrls', 'serviceCompletedAt', 'pickupOtpVerified', 'deliveryOtpVerified', 'updatedAt']))
@@ -594,7 +605,12 @@ service cloud.firestore {
           request.auth.token.email == 'shahsignature@gmail.com'
         ))
       );
-      allow create: if isValidId(ticketId) && isVerifiedIdentity() && isValidSupportTicket(incoming()) && incoming().status == 'open';
+      allow create: if isValidId(ticketId) &&
+        isVerifiedIdentity() &&
+        isValidSupportTicket(incoming()) &&
+        incoming().status == 'open' &&
+        (!('customerId' in incoming()) || incoming().customerId == request.auth.uid) &&
+        (!('partnerId' in incoming()) || incoming().partnerId == request.auth.uid);
       allow update: if isValidId(ticketId) && isAdmin() && isValidSupportTicket(incoming());
       allow delete: if isValidId(ticketId) && isAdmin();
     }

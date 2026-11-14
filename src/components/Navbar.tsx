@@ -26,13 +26,14 @@ export const Navbar: React.FC = () => {
     setRole, 
     setIsBookingOpen, 
     cart, 
-    orders, 
+    customerOrders, 
     setActiveTrackingOrderId,
     businessSettings,
     setIsContactModalOpen,
     setActiveLegalModal,
     openAuthModal,
     logout,
+    authSession,
     selectedLocationPin,
     serviceAreas,
   } = useApp();
@@ -40,9 +41,11 @@ export const Navbar: React.FC = () => {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const cartItemCount = cart.reduce((sum, item) => sum + item.quantity, 0);
 
-  const activeOrdersCount = orders.filter(
-    o => o.status !== 'completed' && o.status !== 'delivered' && o.status !== 'cancelled'
-  ).length;
+  const activeOrdersCount = authSession?.isAuthenticated
+    ? customerOrders.filter(
+        o => o.status !== 'completed' && o.status !== 'delivered' && o.status !== 'cancelled' && o.status !== 'CANCELLED' && o.status !== 'DELIVERED'
+      ).length
+    : 0;
 
   const currentArea = serviceAreas.find(a => a.pincode === selectedLocationPin);
   const activeHubsCount = serviceAreas.filter(a => a.isActive).length;
@@ -140,7 +143,9 @@ export const Navbar: React.FC = () => {
               href="#track" 
               onClick={() => {
                 setRole('customer');
-                if (orders.length > 0) setActiveTrackingOrderId(orders[0].id);
+                if (authSession?.isAuthenticated && customerOrders.length > 0) {
+                  setActiveTrackingOrderId(customerOrders[0].id);
+                }
               }}
               className="flex items-center gap-1.5 hover:text-[#D4AF37] transition-colors whitespace-nowrap shrink-0"
             >
@@ -210,15 +215,36 @@ export const Navbar: React.FC = () => {
               </button>
             )}
 
-            {/* Authentication Portal Trigger */}
-            <button
-              onClick={() => openAuthModal(role, 'login')}
-              className="px-3.5 py-2 text-xs font-semibold text-[#F3E5AB] bg-[#060B18] border border-[#D4AF37]/50 rounded-md hover:border-[#D4AF37] hover:text-white transition-colors flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
-              title="Sign In / Register (Customer, Partner, Admin)"
-            >
-              <User className="w-3.5 h-3.5 text-[#D4AF37]" />
-              <span className="hidden sm:inline">Sign In</span>
-            </button>
+            {/* Authentication Portal Trigger / Active Session */}
+            {authSession?.isAuthenticated ? (
+              <div className="flex items-center gap-1.5">
+                <button
+                  onClick={() => openAuthModal(role, 'login')}
+                  className="px-3 py-2 text-xs font-semibold text-[#F3E5AB] bg-[#060B18] border border-[#D4AF37]/50 rounded-md hover:border-[#D4AF37] hover:text-white transition-colors flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+                  title={`${authSession.userName || 'Account'} (${authSession.activeRole})`}
+                >
+                  <User className="w-3.5 h-3.5 text-[#D4AF37]" />
+                  <span className="hidden sm:inline">{(authSession.userName || 'Account').split(' ')[0]}</span>
+                </button>
+                <button
+                  onClick={logout}
+                  className="px-2.5 py-2 text-xs font-semibold text-rose-200 bg-rose-950/60 border border-rose-800/60 rounded-md hover:bg-rose-900 transition-colors cursor-pointer whitespace-nowrap"
+                  title="Sign Out"
+                >
+                  <span className="hidden sm:inline">Sign Out</span>
+                  <span className="sm:hidden">Exit</span>
+                </button>
+              </div>
+            ) : (
+              <button
+                onClick={() => openAuthModal(role, 'login')}
+                className="px-3.5 py-2 text-xs font-semibold text-[#F3E5AB] bg-[#060B18] border border-[#D4AF37]/50 rounded-md hover:border-[#D4AF37] hover:text-white transition-colors flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+                title="Sign In / Register (Customer, Partner, Admin)"
+              >
+                <User className="w-3.5 h-3.5 text-[#D4AF37]" />
+                <span className="hidden sm:inline">Sign In</span>
+              </button>
+            )}
 
             {/* Primary Action Button */}
             <button
