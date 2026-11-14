@@ -14,12 +14,16 @@ import {
   Crown,
   AlertCircle,
 } from 'lucide-react';
+import steamIroningImg from '../assets/images/signature_steam_ironing_1794169587088.jpg';
+import deluxePackagingImg from '../assets/images/signature_deluxe_packaging_1794169587899.jpg';
+import heroConciergeImg from '../assets/images/signature_hero_concierge_1794169586410.jpg';
+import drycleanCraftImg from '../assets/images/signature_dryclean_craft_1794169588382.jpg';
 
 const SERVICE_IMAGES: Record<string, string> = {
-  ironing_steam: '/src/assets/images/signature_steam_ironing_1794169587088.jpg',
-  ironing_normal: '/src/assets/images/signature_deluxe_packaging_1794169587899.jpg',
-  laundry: '/src/assets/images/signature_hero_concierge_1794169586410.jpg',
-  dry_cleaning: '/src/assets/images/signature_dryclean_craft_1794169588382.jpg',
+  ironing_steam: steamIroningImg,
+  ironing_normal: deluxePackagingImg,
+  laundry: heroConciergeImg,
+  dry_cleaning: drycleanCraftImg,
 };
 
 const getServiceIcon = (id: string) => {
@@ -135,10 +139,7 @@ export const ServicesShowcase: React.FC = () => {
             <div className="lg:col-span-5 bg-[#0B132B] text-white rounded-lg overflow-hidden border border-[#D4AF37]/30 shadow-xl flex flex-col justify-between">
               <div className="relative aspect-[16/10] overflow-hidden">
                 <img
-                  src={
-                    SERVICE_IMAGES[currentCat.id] ||
-                    '/src/assets/images/signature_hero_concierge_1794169586410.jpg'
-                  }
+                  src={SERVICE_IMAGES[currentCat.id] || heroConciergeImg}
                   alt={currentCat.nameEn}
                   referrerPolicy="no-referrer"
                   className="w-full h-full object-cover transition-transform duration-700 hover:scale-105"

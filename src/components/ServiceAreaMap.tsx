@@ -61,6 +61,13 @@ export const ServiceAreaMap: React.FC = () => {
   const apiKey = getGoogleMapsApiKey();
   const [selectedHub, setSelectedHub] = useState<HubMarker | null>(DELHI_110086_HUBS[0]);
   const [activeCategory, setActiveCategory] = useState<string>('ALL');
+  const [mapLoadFailed, setMapLoadFailed] = useState(false);
+
+  React.useEffect(() => {
+    const onQuotaOrAuthFail = () => setMapLoadFailed(true);
+    window.addEventListener('gmp-quota-exceeded', onQuotaOrAuthFail);
+    return () => window.removeEventListener('gmp-quota-exceeded', onQuotaOrAuthFail);
+  }, []);
 
   const filteredHubs = activeCategory === 'ALL' 
     ? DELHI_110086_HUBS 
@@ -152,7 +159,7 @@ export const ServiceAreaMap: React.FC = () => {
                       <Clock className="w-3 h-3 text-[#D4AF37]" />
                       <span>{hub.timing}</span>
                     </span>
-                    <span className="text-[#F3E5AB] font-semibold">Focus Map →</span>
+                    <span className="text-[#F3E5AB] font-semibold">Focus Hub →</span>
                   </div>
                 </div>
               );
@@ -165,10 +172,15 @@ export const ServiceAreaMap: React.FC = () => {
           </div>
         </div>
 
-        {/* Right Side: Google Map */}
+        {/* Right Side: Google Map or Interactive Hub Card Fallback */}
         <div className="lg:col-span-2 relative min-h-[360px] lg:min-h-[480px] bg-slate-950">
-          {apiKey ? (
-            <APIProvider apiKey={apiKey} language="en" region="IN">
+          {apiKey && !mapLoadFailed ? (
+            <APIProvider
+              apiKey={apiKey}
+              language="en"
+              region="IN"
+              onError={() => setMapLoadFailed(true)}
+            >
               <div className="w-full h-full min-h-[360px] lg:min-h-[480px]">
                 <Map
                   mapId="DEMO_MAP_ID"
@@ -227,12 +239,31 @@ export const ServiceAreaMap: React.FC = () => {
               </div>
             </APIProvider>
           ) : (
-            <div className="w-full h-full flex flex-col items-center justify-center p-8 text-center text-slate-400 space-y-3">
-              <MapPin className="w-12 h-12 text-[#D4AF37] opacity-60" />
-              <p className="text-sm font-semibold text-slate-200">Google Maps Platform Initializing...</p>
-              <p className="text-xs text-slate-400 max-w-xs">
-                Maps API key is being loaded for Delhi PIN Code 110086 logistics perimeter.
-              </p>
+            <div className="w-full h-full flex flex-col items-center justify-center p-8 text-center text-slate-300 space-y-4">
+              <div className="w-14 h-14 rounded-full bg-[#D4AF37]/15 border border-[#D4AF37]/40 flex items-center justify-center">
+                <Navigation className="w-7 h-7 text-[#D4AF37]" />
+              </div>
+              {selectedHub ? (
+                <div className="max-w-md bg-[#060B18] border border-[#D4AF37]/40 rounded-xl p-5 space-y-2 text-left shadow-lg">
+                  <div className="text-[10px] font-mono uppercase tracking-wider text-[#F3E5AB] flex items-center gap-1.5">
+                    <Sparkles className="w-3.5 h-3.5 text-[#D4AF37]" />
+                    <span>Selected Dispatch Hub · PIN 110086</span>
+                  </div>
+                  <h4 className="text-base font-bold text-white">{selectedHub.title}</h4>
+                  <p className="text-xs text-slate-300">{selectedHub.address}</p>
+                  <p className="text-xs text-slate-400">{selectedHub.description}</p>
+                  <div className="pt-2 border-t border-slate-800 flex items-center justify-between text-xs">
+                    <span className="text-emerald-400 font-semibold">● Active ({selectedHub.timing})</span>
+                    <span className="font-mono text-slate-400">
+                      {selectedHub.position.lat.toFixed(4)}, {selectedHub.position.lng.toFixed(4)}
+                    </span>
+                  </div>
+                </div>
+              ) : (
+                <p className="text-xs text-slate-400 max-w-xs">
+                  Select a Delhi PIN 110086 service hub from the list to inspect coverage details.
+                </p>
+              )}
             </div>
           )}
 

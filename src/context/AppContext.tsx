@@ -433,7 +433,19 @@ const LOCAL_STORAGE_KEYS = {
 function readStorage<T>(key: string, fallback: T): T {
   try {
     const raw = localStorage.getItem(key);
-    return raw ? (JSON.parse(raw) as T) : fallback;
+    if (!raw) return fallback;
+    const parsed = JSON.parse(raw);
+    if (parsed === null || parsed === undefined) return fallback;
+    if (Array.isArray(fallback)) {
+      if (!Array.isArray(parsed)) return fallback;
+      if (parsed.length === 0 && fallback.length > 0) return fallback;
+      return parsed as T;
+    }
+    if (typeof fallback === 'object' && fallback !== null) {
+      if (typeof parsed !== 'object' || Array.isArray(parsed)) return fallback;
+      return { ...fallback, ...parsed } as T;
+    }
+    return parsed as T;
   } catch {
     return fallback;
   }
@@ -558,7 +570,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
   const effectiveCustomerId =
     authSession?.isAuthenticated && authSession.activeRole === 'CUSTOMER' ? authSession.userId : activeCustomerId;
-  const customerUser = customers.find(c => c.id === effectiveCustomerId) || customers[0];
+  const customerUser = customers.find(c => c.id === effectiveCustomerId) || customers[0] || INITIAL_CUSTOMERS[0];
 
   const updateCustomerUser = (updates: Partial<CustomerUser>) => {
     if (!authSession?.isAuthenticated || !authSession.token) return;
@@ -693,7 +705,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
   const effectivePartnerId =
     authSession?.isAuthenticated && authSession.activeRole === 'SERVICE_PARTNER' ? authSession.userId : activePartnerId;
-  const activePartner = partners.find(p => p.id === effectivePartnerId) || partners[0];
+  const activePartner = partners.find(p => p.id === effectivePartnerId) || partners[0] || INITIAL_PARTNERS[0];
 
   const updatePartnerProfile = (partnerId: string, updates: Partial<Partner>) => {
     if (!authSession?.isAuthenticated || !authSession.token) return;

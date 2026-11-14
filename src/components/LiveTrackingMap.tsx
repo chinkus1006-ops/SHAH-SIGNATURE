@@ -22,6 +22,13 @@ export const LiveTrackingMap: React.FC<LiveTrackingMapProps> = ({
 }) => {
   const apiKey = getGoogleMapsApiKey();
   const [activeMarker, setActiveMarker] = useState<'customer' | 'valet' | 'studio' | null>('valet');
+  const [mapLoadFailed, setMapLoadFailed] = useState(false);
+
+  React.useEffect(() => {
+    const onQuotaOrAuthFail = () => setMapLoadFailed(true);
+    window.addEventListener('gmp-quota-exceeded', onQuotaOrAuthFail);
+    return () => window.removeEventListener('gmp-quota-exceeded', onQuotaOrAuthFail);
+  }, []);
 
   // Realistic coordinates inside Delhi PIN 110086
   const studioCoords = { lat: 28.6942, lng: 77.0655 };
@@ -62,8 +69,13 @@ export const LiveTrackingMap: React.FC<LiveTrackingMapProps> = ({
 
       {/* Map View */}
       <div className="relative w-full h-[320px] bg-slate-100">
-        {apiKey ? (
-          <APIProvider apiKey={apiKey} language="en" region="IN">
+        {apiKey && !mapLoadFailed ? (
+          <APIProvider
+            apiKey={apiKey}
+            language="en"
+            region="IN"
+            onError={() => setMapLoadFailed(true)}
+          >
             <Map
               mapId="DEMO_MAP_ID"
               defaultCenter={valetCoords}
@@ -134,9 +146,14 @@ export const LiveTrackingMap: React.FC<LiveTrackingMapProps> = ({
             </Map>
           </APIProvider>
         ) : (
-          <div className="w-full h-full flex flex-col items-center justify-center text-center p-4">
-            <Bike className="w-8 h-8 text-[#D4AF37] mb-2" />
-            <p className="text-xs text-slate-600">Loading Google Maps Radar...</p>
+          <div className="w-full h-full flex flex-col items-center justify-center text-center p-6 space-y-2">
+            <Bike className="w-9 h-9 text-[#D4AF37]" />
+            <div className="text-sm font-bold text-[#0B132B]">
+              Valet Assigned: {valetName}
+            </div>
+            <p className="text-xs text-slate-600 max-w-sm">
+              Transit Corridor: Sultanpuri Central Studio → {order ? order.customerAddress : 'Customer Doorstep (PIN 110086)'}
+            </p>
           </div>
         )}
       </div>

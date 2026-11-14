@@ -12,6 +12,7 @@ import {
   Crosshair,
   AlertCircle,
 } from 'lucide-react';
+import heroConciergeImg from '../assets/images/signature_hero_concierge_1794169586410.jpg';
 
 export const Hero: React.FC = () => {
   const {
@@ -269,7 +270,7 @@ export const Hero: React.FC = () => {
           <div className="lg:col-span-5 relative">
             <div className="relative rounded-lg overflow-hidden border border-[#D4AF37]/30 shadow-2xl bg-[#060B18]">
               <img
-                src="/src/assets/images/signature_hero_concierge_1794169586410.jpg"
+                src={heroConciergeImg}
                 alt="SHAH SIGNATURE Bespoke Garment Care Wardrobe"
                 referrerPolicy="no-referrer"
                 className="w-full h-full object-cover aspect-[4/3] lg:aspect-[3/4] hover:scale-102 transition-transform duration-700"

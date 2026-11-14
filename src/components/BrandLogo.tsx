@@ -19,7 +19,8 @@ export const BrandLogo: React.FC<BrandLogoProps> = ({
   const { businessSettings } = useApp();
 
   // Official logo image assets uploaded by owner Ronak
-  const OFFICIAL_FULL_LOGO = businessSettings.businessLogo || '/assets/aistudio/1783851770902_86d18057.png';
+  const DEFAULT_FULL_LOGO = '/assets/aistudio/1783851770902_86d18057.png';
+  const OFFICIAL_FULL_LOGO = businessSettings?.businessLogo || DEFAULT_FULL_LOGO;
   const OFFICIAL_BADGE_LOGO = '/assets/aistudio/file_000000006498720893b792c190ab070e_3db2f77e.png';
 
   // Height specifications for the official horizontal logo
@@ -58,7 +59,7 @@ export const BrandLogo: React.FC<BrandLogoProps> = ({
       <div className={`inline-flex items-center justify-center select-none ${className}`}>
         <img
           src={OFFICIAL_BADGE_LOGO}
-          alt={businessSettings.brandName || 'SHAH SIGNATURE'}
+          alt={businessSettings?.brandName || 'SHAH SIGNATURE'}
           className={`${badgeSizes[size]} object-contain rounded-full shadow-sm hover:scale-105 transition-transform duration-300`}
           loading="eager"
         />
@@ -73,7 +74,13 @@ export const BrandLogo: React.FC<BrandLogoProps> = ({
         <div className="relative group flex items-center">
           <img
             src={OFFICIAL_FULL_LOGO}
-            alt={`${businessSettings.brandName || 'SHAH SIGNATURE'} - ${businessSettings.tagline || 'ONE NAME. MANY SOLUTIONS. SIGNATURE OF TRUST.'}`}
+            onError={e => {
+              const img = e.currentTarget;
+              if (!img.src.endsWith(DEFAULT_FULL_LOGO)) {
+                img.src = DEFAULT_FULL_LOGO;
+              }
+            }}
+            alt={`${businessSettings?.brandName || 'SHAH SIGNATURE'} - ${businessSettings?.tagline || 'ONE NAME. MANY SOLUTIONS. SIGNATURE OF TRUST.'}`}
             className={`${fullHeights[size]} w-auto object-contain max-w-[280px] sm:max-w-[360px] drop-shadow-sm transition-all duration-300`}
             loading="eager"
           />

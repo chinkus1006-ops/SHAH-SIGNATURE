@@ -20,6 +20,7 @@ import { Footer } from './components/Footer';
 import { ServiceAreaMap } from './components/ServiceAreaMap';
 import { RetentionHub } from './components/RetentionHub';
 import { AboutAndFaqSection } from './components/AboutAndFaqSection';
+import { ErrorBoundary } from './components/ErrorBoundary';
 import { ShieldCheck, Bike, Lock } from 'lucide-react';
 
 const MainLayout: React.FC = () => {
@@ -62,7 +63,15 @@ const MainLayout: React.FC = () => {
             <Hero />
             <ServicesShowcase />
             <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-              <ServiceAreaMap />
+              <ErrorBoundary
+                fallback={
+                  <div className="bg-[#0B132B] text-white rounded-2xl border border-[#D4AF37]/30 p-6 text-center text-xs">
+                    SHAH SIGNATURE Valet Network Active in Delhi PIN 110086, 110085 & 110087.
+                  </div>
+                }
+              >
+                <ServiceAreaMap />
+              </ErrorBoundary>
             </div>
             <HowItWorks />
             <CustomerDashboard />
@@ -152,8 +161,10 @@ const MainLayout: React.FC = () => {
 
 export default function App() {
   return (
-    <AppProvider>
-      <MainLayout />
-    </AppProvider>
+    <ErrorBoundary fullPage>
+      <AppProvider>
+        <MainLayout />
+      </AppProvider>
+    </ErrorBoundary>
   );
 }

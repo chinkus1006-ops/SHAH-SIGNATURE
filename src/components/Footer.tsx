@@ -25,8 +25,8 @@ export const Footer: React.FC = () => {
     setActiveLegalModal 
   } = useApp();
 
-  const cleanWhatsApp = businessSettings.whatsappSupportNumber.replace(/[^0-9]/g, '') || '919899229102';
-  const rawTel = businessSettings.businessPhone.replace(/[^0-9+]/g, '') || '+919899229102';
+  const cleanWhatsApp = (businessSettings?.whatsappSupportNumber || '+919899229102').replace(/[^0-9]/g, '') || '919899229102';
+  const rawTel = (businessSettings?.businessPhone || '9899229102').replace(/[^0-9+]/g, '') || '+919899229102';
   const activeCities = Array.from(new Set(serviceAreas.filter(a => a.isActive).map(a => a.city))).join(', ') || 'Delhi';
 
   return (
