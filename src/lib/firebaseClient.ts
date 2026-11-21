@@ -124,21 +124,32 @@ export async function sendFirebasePhoneOtp(
   phoneNumber: string,
   containerId = 'firebase-recaptcha-container'
 ): Promise<ConfirmationResult> {
-  const digits = phoneNumber.replace(/\D/g, '');
+  const digits = String(phoneNumber || '').replace(/\D/g, '');
   const e164 =
     digits.length === 10
       ? `+91${digits}`
+      : digits.length === 11 && digits.startsWith('0')
+      ? `+91${digits.slice(1)}`
       : digits.length === 12 && digits.startsWith('91')
       ? `+${digits}`
+      : digits.length === 13 && digits.startsWith('910')
+      ? `+91${digits.slice(3)}`
       : phoneNumber.trim();
 
   if (activeRecaptchaVerifier) {
     try {
       activeRecaptchaVerifier.clear();
     } catch {
-      // Ignore cleanup errors
+      // Ignore cleanup errors when DOM unmounted
     }
     activeRecaptchaVerifier = null;
+  }
+
+  if (typeof document !== 'undefined') {
+    const containerEl = document.getElementById(containerId);
+    if (containerEl) {
+      containerEl.innerHTML = '';
+    }
   }
 
   activeRecaptchaVerifier = new RecaptchaVerifier(auth, containerId, {

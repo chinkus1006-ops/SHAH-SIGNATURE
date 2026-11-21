@@ -145,6 +145,26 @@ export const AuthModal: React.FC = () => {
 
   if (!isAuthModalOpen) return null;
 
+  const normalizeClientIndianPhone = (rawPhone: string): string => {
+    const digits = String(rawPhone || '').replace(/\D/g, '');
+    if (digits.length === 10 && /^[6-9]/.test(digits)) return `+91${digits}`;
+    if (digits.length === 11 && digits.startsWith('0') && /^[6-9]/.test(digits.slice(1))) {
+      return `+91${digits.slice(1)}`;
+    }
+    if (digits.length === 12 && digits.startsWith('91') && /^[6-9]/.test(digits.slice(2))) {
+      return `+${digits}`;
+    }
+    if (digits.length === 13 && digits.startsWith('910') && /^[6-9]/.test(digits.slice(3))) {
+      return `+91${digits.slice(3)}`;
+    }
+    return String(rawPhone || '').trim();
+  };
+
+  const isValidClientIndianPhone = (rawPhone: string): boolean => {
+    const normalized = normalizeClientIndianPhone(rawPhone).replace(/\s+/g, '');
+    return /^\+91[6-9]\d{9}$/.test(normalized);
+  };
+
   const resetFormState = () => {
     setErrorMessage('');
     setSuccessMessage('');
@@ -158,6 +178,8 @@ export const AuthModal: React.FC = () => {
     setFirebasePhoneIdToken('');
     setPhoneProofTokenLocal('');
     setInAppOtpPreview('');
+    setVerificationId('');
+    setCooldownRemaining(0);
     setOtpCode('');
   };
 
@@ -313,11 +335,12 @@ export const AuthModal: React.FC = () => {
       return;
     }
 
-    const rawDigits = mobileNumber.replace(/\D/g, '');
-    if (rawDigits.length < 10) {
-      setErrorMessage('Please enter a valid 10-digit Indian mobile number.');
+    if (!isValidClientIndianPhone(mobileNumber)) {
+      setErrorMessage('Please enter a valid 10-digit Indian mobile number starting with 6, 7, 8, or 9.');
       return;
     }
+
+    const normalizedPhone = normalizeClientIndianPhone(mobileNumber);
 
     // Only enforce SMS OTP strictly if the server SMS gateway is actually configured
     if (!otpVerified && smsGatewayChecked && !smsGatewayNotConfigured) {
@@ -344,7 +367,7 @@ export const AuthModal: React.FC = () => {
     try {
       const res = await registerCustomerAccount({
         name: fullName.trim(),
-        phone: mobileNumber.startsWith('+91') ? mobileNumber.trim() : `+91 ${mobileNumber.trim()}`,
+        phone: normalizedPhone,
         email: emailOrIdent.trim() || `cust_${Date.now()}@shahsignature.internal`,
         password,
         addressLine,
@@ -400,11 +423,16 @@ export const AuthModal: React.FC = () => {
       return;
     }
 
+    if (!isValidClientIndianPhone(mobileNumber)) {
+      setErrorMessage('Please enter a valid 10-digit Indian mobile number starting with 6, 7, 8, or 9.');
+      return;
+    }
+
     setIsLoading(true);
     try {
       const res = await registerPartnerAccount({
         name: fullName,
-        phone: mobileNumber.startsWith('+91') ? mobileNumber : `+91 ${mobileNumber}`,
+        phone: normalizeClientIndianPhone(mobileNumber),
         email: emailOrIdent,
         businessName,
         serviceAddress,
@@ -489,13 +517,13 @@ export const AuthModal: React.FC = () => {
 
   // Real Phone OTP Verification via Server SMS Carrier or Firebase Phone Auth
   const handleSendOtp = async () => {
-    const rawDigits = mobileNumber.replace(/\D/g, '');
-    if (rawDigits.length < 10) {
-      setErrorMessage('Please enter a valid 10-digit Indian mobile number (+91).');
+    if (!isValidClientIndianPhone(mobileNumber)) {
+      setErrorMessage('Please enter a valid 10-digit Indian mobile number (+91) starting with 6, 7, 8, or 9.');
       return;
     }
     if (cooldownRemaining > 0) return;
 
+    const normalizedPhone = normalizeClientIndianPhone(mobileNumber);
     setIsLoading(true);
     setErrorMessage('');
     setSuccessMessage('');
@@ -504,69 +532,72 @@ export const AuthModal: React.FC = () => {
     let shouldTryFirebasePhoneAuth = false;
 
     try {
-      const res = await fetch('/api/auth/send-otp', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          phone: mobileNumber,
-          role: authModalRole === 'partner' ? 'SERVICE_PARTNER' : 'CUSTOMER',
-        }),
-      });
-      const ct = res.headers.get('content-type') || '';
-      if (ct.includes('application/json')) {
-        const data = await res.json();
-        if (res.ok && data.success) {
-          setOtpSent(true);
-          setOtpProvider('server');
-          setVerificationId(data.verificationId || '');
-          setCooldownRemaining(data.cooldownSeconds || 60);
+      try {
+        const res = await fetch('/api/auth/send-otp', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            phone: normalizedPhone,
+            role: authModalRole === 'partner' ? 'SERVICE_PARTNER' : 'CUSTOMER',
+          }),
+        });
+        const ct = res.headers.get('content-type') || '';
+        if (ct.includes('application/json')) {
+          const data = await res.json();
+          if (res.ok && data.success) {
+            setOtpSent(true);
+            setOtpProvider('server');
+            setVerificationId(data.verificationId || '');
+            setOtpCode('');
+            setCooldownRemaining(data.cooldownSeconds || 60);
 
-          if (data.deliveryMode === 'in_app_challenge' && data.verificationPreviewCode) {
-            setInAppOtpPreview(String(data.verificationPreviewCode));
-            setSmsGatewayNotConfigured(true);
-            setInfoMessage(
-              `In-app OTP verification active (no carrier SMS key set yet). Enter code ${data.verificationPreviewCode} below.`
-            );
-          } else {
-            setInAppOtpPreview('');
-            setSmsGatewayNotConfigured(false);
-            setSuccessMessage(data.message || 'SMS OTP dispatched successfully.');
+            if (data.deliveryMode === 'in_app_challenge' && data.verificationPreviewCode) {
+              setInAppOtpPreview(String(data.verificationPreviewCode));
+              setSmsGatewayNotConfigured(true);
+              setInfoMessage(
+                `In-app OTP verification active (no carrier SMS key set yet). Enter code ${data.verificationPreviewCode} below.`
+              );
+            } else {
+              setInAppOtpPreview('');
+              setSmsGatewayNotConfigured(false);
+              setSuccessMessage(data.message || 'SMS OTP dispatched successfully.');
+            }
+            return;
           }
-          setIsLoading(false);
-          return;
-        }
-        if (data.requiresClientFirebaseAuth) {
-          shouldTryFirebasePhoneAuth = true;
+          if (data.requiresClientFirebaseAuth) {
+            shouldTryFirebasePhoneAuth = true;
+          } else {
+            setErrorMessage(data.message || 'Unable to send OTP. Please check mobile number format.');
+            if (typeof data.cooldownSeconds === 'number') setCooldownRemaining(data.cooldownSeconds);
+            return;
+          }
         } else {
-          setErrorMessage(data.message || 'Unable to send OTP. Please check mobile number format.');
-          if (data.cooldownSeconds) setCooldownRemaining(data.cooldownSeconds);
-          setIsLoading(false);
-          return;
+          shouldTryFirebasePhoneAuth = true;
         }
-      } else {
+      } catch {
         shouldTryFirebasePhoneAuth = true;
       }
-    } catch {
-      shouldTryFirebasePhoneAuth = true;
-    }
 
-    if (shouldTryFirebasePhoneAuth) {
-      try {
-        const confirmation = await sendFirebasePhoneOtp(mobileNumber, 'firebase-recaptcha-container');
-        setFirebaseConfirmation(confirmation);
-        setOtpProvider('firebase');
-        setOtpSent(true);
-        setInAppOtpPreview('');
-        setCooldownRemaining(60);
-        setSuccessMessage('SMS verification code sent via Firebase Phone Auth.');
-      } catch {
-        setSmsGatewayNotConfigured(true);
-        setInfoMessage(
-          'SMS carrier OTP is optional right now. You can register directly below or continue with Google Sign-In.'
-        );
-      } finally {
-        setIsLoading(false);
+      if (shouldTryFirebasePhoneAuth) {
+        try {
+          const confirmation = await sendFirebasePhoneOtp(normalizedPhone, 'firebase-recaptcha-container');
+          setFirebaseConfirmation(confirmation);
+          setOtpProvider('firebase');
+          setOtpSent(true);
+          setOtpCode('');
+          setInAppOtpPreview('');
+          setCooldownRemaining(60);
+          setSuccessMessage('SMS verification code sent via Firebase Phone Auth.');
+        } catch (fbErr: any) {
+          setSmsGatewayNotConfigured(true);
+          const detail = fbErr?.message ? ` (${fbErr.message})` : '';
+          setInfoMessage(
+            `SMS carrier OTP is optional right now${detail}. You can register directly below or continue with Google Sign-In.`
+          );
+        }
       }
+    } finally {
+      setIsLoading(false);
     }
   };
 
@@ -577,21 +608,45 @@ export const AuthModal: React.FC = () => {
       return;
     }
 
+    if (!isValidClientIndianPhone(mobileNumber)) {
+      setErrorMessage('Please enter a valid 10-digit Indian mobile number (+91).');
+      return;
+    }
+
+    const normalizedPhone = normalizeClientIndianPhone(mobileNumber);
     setIsLoading(true);
     setErrorMessage('');
     setInfoMessage('');
 
     try {
       if (otpProvider === 'firebase' && firebaseConfirmation) {
-        const verified = await verifyFirebasePhoneOtp(firebaseConfirmation, cleanOtp);
-        setFirebasePhoneIdToken(verified.idToken);
-        setOtpVerified(true);
-        setInAppOtpPreview('');
-        setSuccessMessage('Mobile number verified via Firebase Phone Auth!');
-        return;
+        try {
+          const verified = await verifyFirebasePhoneOtp(firebaseConfirmation, cleanOtp);
+          setFirebasePhoneIdToken(verified.idToken);
+          setOtpVerified(true);
+          setInAppOtpPreview('');
+          setPhoneVerifiedSession(normalizedPhone, undefined, true);
+          setSuccessMessage('Mobile number verified via Firebase Phone Auth!');
+          return;
+        } catch (fbErr: any) {
+          const code = fbErr?.code || '';
+          if (code === 'auth/code-expired' || code === 'auth/session-expired') {
+            setOtpSent(false);
+            setFirebaseConfirmation(null);
+            setCooldownRemaining(0);
+            setErrorMessage('Firebase verification code expired. Please request a new OTP.');
+          } else if (code === 'auth/invalid-verification-code') {
+            setErrorMessage('Incorrect OTP code. Please check the 6-digit SMS code and try again.');
+          } else {
+            setErrorMessage(fbErr?.message || 'Unable to verify Firebase OTP code. Please try again.');
+          }
+          return;
+        }
       }
 
       if (!verificationId) {
+        setOtpSent(false);
+        setCooldownRemaining(0);
         setErrorMessage('Verification session expired. Please request a new OTP code.');
         return;
       }
@@ -602,7 +657,7 @@ export const AuthModal: React.FC = () => {
         body: JSON.stringify({
           verificationId,
           otp: cleanOtp,
-          phone: mobileNumber,
+          phone: normalizedPhone,
         }),
       });
       const ct = res.headers.get('content-type') || '';
@@ -615,10 +670,23 @@ export const AuthModal: React.FC = () => {
         setOtpVerified(true);
         setInAppOtpPreview('');
         setPhoneProofTokenLocal(data.proofToken || '');
-        setPhoneVerifiedSession(mobileNumber, data.proofToken);
+        setPhoneVerifiedSession(
+          data.phone || normalizedPhone,
+          data.proofToken,
+          data.carrierVerified !== false
+        );
         setSuccessMessage(data.message || 'Verification confirmed! Complete registration below.');
       } else {
-        setErrorMessage(data.message || 'Incorrect or expired OTP code.');
+        const msg = String(data.message || 'Incorrect or expired OTP code.');
+        const sessionDead =
+          /expired|invalid or expired|maximum verification|mismatch/i.test(msg);
+        if (sessionDead) {
+          setOtpSent(false);
+          setVerificationId('');
+          setInAppOtpPreview('');
+          setCooldownRemaining(0);
+        }
+        setErrorMessage(msg);
       }
     } catch {
       setErrorMessage('Unable to verify OTP code right now. Please try again.');
@@ -982,7 +1050,21 @@ export const AuthModal: React.FC = () => {
                           type="tel"
                           value={mobileNumber}
                           disabled={otpVerified}
-                          onChange={e => setMobileNumber(e.target.value)}
+                          onChange={e => {
+                            setMobileNumber(e.target.value);
+                            if (otpSent && !otpVerified) {
+                              setOtpSent(false);
+                              setOtpProvider(null);
+                              setVerificationId('');
+                              setInAppOtpPreview('');
+                              setOtpCode('');
+                              setFirebaseConfirmation(null);
+                              setPhoneProofTokenLocal('');
+                              setCooldownRemaining(0);
+                              setErrorMessage('');
+                              setInfoMessage('');
+                            }
+                          }}
                           placeholder="e.g. 98112 99887"
                           className="w-full pl-9 pr-3 py-2 bg-[#0B132B] border border-slate-700 rounded-lg text-sm text-white focus:outline-none focus:border-[#D4AF37] disabled:bg-slate-900 disabled:text-slate-400"
                           required

@@ -41,8 +41,11 @@ export const gatewayStatus = {
   emailGatewayConfigured: Boolean(process.env.SMTP_HOST || process.env.RESEND_API_KEY || process.env.SENDGRID_API_KEY),
 };
 
-// Server-side HMAC secret for verification proof tokens (ephemeral fallback if env unset)
-const SESSION_HMAC_SECRET = process.env.ADMIN_SECRET_KEY || crypto.randomBytes(32).toString('hex');
+// Server-side HMAC secret for verification proof tokens (process-stable dev fallback if env unset)
+const SESSION_HMAC_SECRET =
+  process.env.ADMIN_SECRET_KEY ||
+  process.env.SESSION_SECRET ||
+  crypto.createHash('sha256').update(`${process.cwd()}:shah-signature-otp-hmac`).digest('hex');
 
 interface OtpRecord {
   phone: string;
@@ -71,19 +74,25 @@ const INDIAN_PHONE_REGEX = /^(?:\+91|91)?[6-9]\d{9}$/;
 const INDIAN_PINCODE_REGEX = /^[1-9][0-9]{5}$/;
 
 export function sanitizeIndianPhone(rawPhone: string): string {
-  const digits = rawPhone.replace(/\D/g, '');
-  if (digits.length === 10) {
+  const digits = String(rawPhone || '').replace(/\D/g, '');
+  if (digits.length === 10 && /^[6-9]/.test(digits)) {
     return `+91${digits}`;
   }
-  if (digits.length === 12 && digits.startsWith('91')) {
+  if (digits.length === 11 && digits.startsWith('0') && /^[6-9]/.test(digits.slice(1))) {
+    return `+91${digits.slice(1)}`;
+  }
+  if (digits.length === 12 && digits.startsWith('91') && /^[6-9]/.test(digits.slice(2))) {
     return `+${digits}`;
   }
-  return rawPhone.trim();
+  if (digits.length === 13 && digits.startsWith('910') && /^[6-9]/.test(digits.slice(3))) {
+    return `+91${digits.slice(3)}`;
+  }
+  return String(rawPhone || '').trim();
 }
 
 export function isValidIndianPhone(phone: string): boolean {
-  const cleaned = phone.replace(/\s+/g, '');
-  return INDIAN_PHONE_REGEX.test(cleaned);
+  const normalized = sanitizeIndianPhone(phone).replace(/\s+/g, '');
+  return INDIAN_PHONE_REGEX.test(normalized);
 }
 
 export function isValidIndianPincode(pincode: string): boolean {
@@ -201,11 +210,17 @@ export async function sendPhoneOtp(
     };
   }
 
-  const rawOtp = crypto.randomInt(100000, 999999).toString();
+  const rawOtp = crypto.randomInt(100000, 1000000).toString();
   const verificationId = `v_${crypto.randomBytes(12).toString('hex')}`;
   const salt = crypto.randomBytes(16).toString('hex');
   const hashedOtp = hashOtpWithSalt(rawOtp, salt);
   const hasRealCarrier = gatewayStatus.smsGatewayConfigured;
+
+  for (const [existingId, existingRec] of otpStore.entries()) {
+    if (existingRec.phone === phone) {
+      otpStore.delete(existingId);
+    }
+  }
 
   otpStore.set(verificationId, {
     phone,
@@ -243,8 +258,9 @@ export async function sendPhoneOtp(
           otp: rawOtp,
         }),
       });
-      if (!msgResp.ok) {
-        throw new Error(`MSG91 HTTP ${msgResp.status}`);
+      const msgBody = await msgResp.json().catch(() => null);
+      if (!msgResp.ok || (msgBody && msgBody.type === 'error')) {
+        throw new Error(msgBody?.message || `MSG91 HTTP ${msgResp.status}`);
       }
       return {
         success: true,
@@ -332,7 +348,8 @@ export async function verifyPhoneOtp(
   message: string;
 }> {
   const now = Date.now();
-  const record = otpStore.get(verificationId);
+  const cleanVerificationId = String(verificationId || '').trim();
+  const record = otpStore.get(cleanVerificationId);
 
   if (!record) {
     return {
@@ -350,7 +367,7 @@ export async function verifyPhoneOtp(
   }
 
   if (record.expiresAt < now) {
-    otpStore.delete(verificationId);
+    otpStore.delete(cleanVerificationId);
     return {
       success: false,
       message: 'OTP has expired. Verification codes are valid for 10 minutes.',
@@ -359,7 +376,7 @@ export async function verifyPhoneOtp(
 
   record.attempts += 1;
   if (record.attempts > 5) {
-    otpStore.delete(verificationId);
+    otpStore.delete(cleanVerificationId);
     return {
       success: false,
       message: 'Maximum verification attempts exceeded (5/5). Please request a fresh OTP.',
@@ -375,7 +392,7 @@ export async function verifyPhoneOtp(
     };
   }
 
-  otpStore.delete(verificationId);
+  otpStore.delete(cleanVerificationId);
   const proofToken = issuePhoneVerificationProof(record.phone, record.carrierVerified);
 
   let customToken: string | undefined;

@@ -139,7 +139,10 @@ const atomicOrderLocks = new Map<string, { partnerId: string; partnerName: strin
 const adminLoginAttempts = new Map<string, { attempts: number; lockedUntil: number }>();
 const loginRateLimits = new Map<string, { attempts: number; lockedUntil: number }>();
 const serverAuditLogs: any[] = [];
-const SESSION_TOKEN_SECRET = process.env.ADMIN_SECRET_KEY || crypto.randomBytes(32).toString('hex');
+const SESSION_TOKEN_SECRET =
+  process.env.ADMIN_SECRET_KEY ||
+  process.env.SESSION_SECRET ||
+  crypto.createHash('sha256').update(`${process.cwd()}:shah-signature-session`).digest('hex');
 
 function sanitizeCustomerDto(c: CustomerUser): CustomerUser {
   const copy = { ...c };
@@ -398,12 +401,12 @@ function findEligiblePartnersServer(params: {
 
 app.post('/api/auth/send-otp', async (req, res) => {
   try {
-    const { phone, role = 'CUSTOMER' } = req.body;
+    const { phone, role = 'CUSTOMER' } = req.body || {};
     if (!phone) {
       return res.status(400).json({ success: false, message: 'Mobile number is required.' });
     }
 
-    const result = await sendPhoneOtp(phone, role === 'SERVICE_PARTNER' ? 'SERVICE_PARTNER' : 'CUSTOMER');
+    const result = await sendPhoneOtp(String(phone), role === 'SERVICE_PARTNER' ? 'SERVICE_PARTNER' : 'CUSTOMER');
     if (!result.success) {
       const statusCode =
         typeof result.cooldownSeconds === 'number' || result.message.includes('Rate limit')
@@ -411,14 +414,14 @@ app.post('/api/auth/send-otp', async (req, res) => {
           : result.message.includes('Invalid Indian mobile')
           ? 400
           : 502;
-      recordServerAudit('OTP_REQUEST_STATUS', role, phone, result.message, 'warning');
+      recordServerAudit('OTP_REQUEST_STATUS', role, String(phone), result.message, 'warning');
       return res.status(statusCode).json(result);
     }
 
     recordServerAudit(
       'OTP_REQUEST_DISPATCHED',
       role,
-      sanitizeIndianPhone(phone),
+      sanitizeIndianPhone(String(phone)),
       result.smsDispatched ? 'SMS OTP dispatched via carrier.' : 'In-app verification OTP issued.',
       'success'
     );
@@ -431,14 +434,14 @@ app.post('/api/auth/send-otp', async (req, res) => {
 
 app.post('/api/auth/verify-otp', async (req, res) => {
   try {
-    const { verificationId, otp, phone } = req.body;
+    const { verificationId, otp, phone } = req.body || {};
     if (!verificationId || !otp || !phone) {
       return res.status(400).json({ success: false, message: 'Verification ID, phone number, and OTP are required.' });
     }
 
-    const result = await verifyPhoneOtp(verificationId, otp, phone);
+    const result = await verifyPhoneOtp(String(verificationId), String(otp), String(phone));
     if (!result.success) {
-      recordServerAudit('OTP_VERIFICATION_FAILED', 'UNKNOWN', sanitizeIndianPhone(phone), result.message, 'blocked');
+      recordServerAudit('OTP_VERIFICATION_FAILED', 'UNKNOWN', sanitizeIndianPhone(String(phone)), result.message, 'blocked');
       return res.status(400).json(result);
     }
 
@@ -2590,6 +2593,10 @@ app.post('/api/notifications/test', async (req, res) => {
   });
 });
 
+app.get('/api/health', (_req, res) => {
+  return res.json({ ok: true, brand: 'SHAH SIGNATURE' });
+});
+
 // Explicit JSON 404 for unknown /api/* routes so they never fall through to SPA HTML
 app.all('/api/*', (_req, res) => {
   return res.status(404).json({ success: false, message: 'API route not found.' });
@@ -2603,16 +2610,37 @@ async function startServer() {
     app.get('*', (_req, res) => {
       res.sendFile(path.resolve(__dirname, 'dist', 'index.html'));
     });
-  } else {
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: 'spa',
+
+    app.listen(PORT, '0.0.0.0', () => {
+      console.log(`[SHAH SIGNATURE] Server running at http://0.0.0.0:${PORT}`);
     });
-    app.use(vite.middlewares);
+    return;
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
+  // Bind HTTP port immediately so platform startup health checks succeed without waiting on cold Vite optimize
+  const httpServer = app.listen(PORT, '0.0.0.0', () => {
     console.log(`[SHAH SIGNATURE] Server running at http://0.0.0.0:${PORT}`);
+  });
+
+  const vitePromise = createViteServer({
+    server: {
+      middlewareMode: true,
+      hmr: process.env.DISABLE_HMR === 'true' ? false : { server: httpServer },
+    },
+    appType: 'spa',
+  });
+
+  vitePromise.catch(err => {
+    console.error('[SHAH SIGNATURE] Vite middleware initialization error:', err);
+  });
+
+  app.use(async (req, res, next) => {
+    try {
+      const vite = await vitePromise;
+      return vite.middlewares(req, res, next);
+    } catch (err) {
+      return next(err);
+    }
   });
 }
 

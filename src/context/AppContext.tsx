@@ -341,7 +341,7 @@ interface AppContextType {
 
   // Authentication & Session
   phoneProofToken: string | null;
-  setPhoneVerifiedSession: (phone: string, proofToken?: string) => void;
+  setPhoneVerifiedSession: (phone: string, proofToken?: string, carrierVerified?: boolean) => void;
   firebaseUid: string | null;
   loginAdmin: (credentials: { emailOrUsername: string; password?: string; token?: string }) => { success: boolean; message: string };
   loginCustomer: (credentials: { emailOrCode: string; password?: string }) => Promise<{ success: boolean; message: string; customer?: CustomerUser }>;
@@ -2875,14 +2875,15 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   // ==================== AUTHENTICATION & SESSIONS ====================
-  const setPhoneVerifiedSession = (phone: string, proofToken?: string) => {
+  const setPhoneVerifiedSession = (phone: string, proofToken?: string, carrierVerified = true) => {
     if (proofToken) {
       setPhoneProofToken(proofToken);
       localStorage.setItem('shah_phone_proof_v1', proofToken);
     }
-    updateCustomerUser({ phone, phoneVerified: true });
+    const isVerified = Boolean(carrierVerified);
+    updateCustomerUser({ phone, phoneVerified: isVerified });
     if (authSession) {
-      const updated = { ...authSession, userPhone: phone, phoneVerified: true };
+      const updated = { ...authSession, userPhone: phone, phoneVerified: isVerified };
       setAuthSession(updated);
       localStorage.setItem('shah_auth_session_v3', JSON.stringify(updated));
     }
@@ -3146,7 +3147,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         userName: newCustomer.name,
         userEmail: newCustomer.email,
         userPhone: newCustomer.phone,
-        phoneVerified: Boolean(newCustomer.phoneVerified || phoneProofToken),
+        phoneVerified: Boolean(newCustomer.phoneVerified),
         token: json.token,
         expiresAt: new Date(Date.now() + 24 * 3600 * 1000).toISOString(),
       };
